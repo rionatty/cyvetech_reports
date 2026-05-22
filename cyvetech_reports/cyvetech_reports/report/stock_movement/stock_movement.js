@@ -26,18 +26,6 @@ frappe.query_reports["Stock Movement"] = {
             "reqd": 1
         },
         {
-            "fieldname": "price_list",
-            "label": __("Price List"),
-            "fieldtype": "Link",
-            "options": "Price List",
-            "default": "Standard Selling",
-            "get_query": function() {
-                return {
-                    filters: { 'selling': 1, 'enabled': 1 }
-                };
-            }
-        },
-        {
             "fieldname": "warehouse",
             "label": __("Warehouse"),
             "fieldtype": "Link",
@@ -89,8 +77,8 @@ frappe.query_reports["Stock Movement"] = {
         if (column.fieldname == "in_qty" && data && data.in_qty > 0) {
             value = `<span style="color:green">${value}</span>`;
         }
-        if (column.fieldname == "selling_rate" && data && !data.selling_rate) {
-            value = `<span style="color:orange" title="No price set in price list">N/A</span>`;
+        if (column.fieldname == "valuation_rate" && data && !data.valuation_rate) {
+            value = `<span style="color:#718096">-</span>`;
         }
         return value;
     },

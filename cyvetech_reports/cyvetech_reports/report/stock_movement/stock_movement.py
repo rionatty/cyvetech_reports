@@ -90,10 +90,10 @@ def get_columns():
          "options": "UOM", "width": 80},
         {"label": _("Warehouse"), "fieldname": "warehouse", "fieldtype": "Link",
          "options": "Warehouse", "width": 160},
-        {"label": _("Selling Rate"), "fieldname": "selling_rate", "fieldtype": "Currency", "width": 110},
+        {"label": _("Val. Rate"), "fieldname": "valuation_rate", "fieldtype": "Currency", "width": 110},
         {"label": _("Opening Qty"), "fieldname": "opening_qty", "fieldtype": "Float",
          "width": 110, "precision": 2},
-        {"label": _("Opening Value"), "fieldname": "opening_value", "fieldtype": "Currency", "width": 120},
+        {"label": _("Opening Value"), "fieldname": "opening_value", "fieldtype": "Currency", "width": 130},
         {"label": _("In Qty"), "fieldname": "in_qty", "fieldtype": "Float",
          "width": 100, "precision": 2},
         {"label": _("In Value"), "fieldname": "in_value", "fieldtype": "Currency", "width": 120},
@@ -124,8 +124,11 @@ def get_data(filters):
             "item_code": row.item_code,
             "warehouse": row.warehouse,
             "opening_qty": flt(row.opening_qty),
+            "opening_value": flt(row.opening_value),
             "in_qty": 0.0,
+            "in_value": 0.0,
             "out_qty": 0.0,
+            "out_value": 0.0,
         }
 
     for row in movements:
@@ -135,20 +138,19 @@ def get_data(filters):
                 "item_code": row.item_code,
                 "warehouse": row.warehouse,
                 "opening_qty": 0.0,
+                "opening_value": 0.0,
                 "in_qty": 0.0,
+                "in_value": 0.0,
                 "out_qty": 0.0,
+                "out_value": 0.0,
             }
         result[key]["in_qty"] = flt(row.in_qty)
+        result[key]["in_value"] = flt(row.in_value)
         result[key]["out_qty"] = flt(row.out_qty)
+        result[key]["out_value"] = flt(row.out_value)
 
     item_list = list({k[0] for k in result.keys()})
-
     item_details = get_item_details(item_list)
-    selling_prices = get_selling_prices(
-        item_list,
-        filters.get("price_list") or "Standard Selling",
-        filters.get("to_date")
-    )
 
     data = []
     show_zero = filters.get("show_zero_balance")
@@ -160,17 +162,16 @@ def get_data(filters):
         row["brand"] = item_info.get("brand")
         row["stock_uom"] = item_info.get("stock_uom")
 
-        selling_rate = flt(selling_prices.get(row["item_code"], 0))
-        row["selling_rate"] = selling_rate
-
         row["closing_qty"] = flt(
-            row["opening_qty"] + row["in_qty"] - row["out_qty"], 2
+            row["opening_qty"] + row["in_qty"] - row["out_qty"], 3
         )
-
-        row["opening_value"] = flt(row["opening_qty"] * selling_rate, 2)
-        row["in_value"] = flt(row["in_qty"] * selling_rate, 2)
-        row["out_value"] = flt(row["out_qty"] * selling_rate, 2)
-        row["closing_value"] = flt(row["closing_qty"] * selling_rate, 2)
+        row["closing_value"] = flt(
+            row["opening_value"] + row["in_value"] - row["out_value"], 2
+        )
+        # Valuation rate = closing value / closing qty
+        row["valuation_rate"] = flt(
+            row["closing_value"] / row["closing_qty"], 2
+        ) if row["closing_qty"] else 0.0
 
         has_activity = (
             row["opening_qty"] or row["in_qty"]
@@ -232,7 +233,8 @@ def get_opening_balance(filters, item_codes=None):
         SELECT
             sle.item_code,
             sle.warehouse,
-            sle.qty_after_transaction AS opening_qty
+            sle.qty_after_transaction AS opening_qty,
+            sle.stock_value           AS opening_value
         FROM `tabStock Ledger Entry` sle
         INNER JOIN (
             SELECT
@@ -282,9 +284,13 @@ def get_period_movements(filters, item_codes=None):
             sle.item_code,
             sle.warehouse,
             SUM(CASE WHEN sle.actual_qty > 0
-                THEN sle.actual_qty ELSE 0 END) AS in_qty,
+                THEN sle.actual_qty ELSE 0 END)                   AS in_qty,
+            SUM(CASE WHEN sle.actual_qty > 0
+                THEN sle.stock_value_difference ELSE 0 END)       AS in_value,
             SUM(CASE WHEN sle.actual_qty < 0
-                THEN ABS(sle.actual_qty) ELSE 0 END) AS out_qty
+                THEN ABS(sle.actual_qty) ELSE 0 END)              AS out_qty,
+            SUM(CASE WHEN sle.actual_qty < 0
+                THEN ABS(sle.stock_value_difference) ELSE 0 END)  AS out_value
         FROM `tabStock Ledger Entry` sle
         WHERE sle.posting_date BETWEEN %(from_date)s AND %(to_date)s
         {conditions}
@@ -481,7 +487,7 @@ def get_pdf_html(filters, data, columns=None):
             '<td class="text-muted">' + str(row.get('item_group') or '') + '</td>'
             '<td class="text-muted">' + str(row.get('brand') or '') + '</td>'
             '<td class="text-center">' + str(row.get('stock_uom') or '') + '</td>'
-            '<td class="text-right">' + fmt_money(row.get('selling_rate'), currency=currency) + '</td>'
+            '<td class="text-right">' + fmt_money(row.get('valuation_rate'), currency=currency) + '</td>'
             '<td class="text-right">' + f"{flt(row.get('opening_qty')):,.2f}" + '</td>'
             '<td class="text-right">' + fmt_money(row.get('opening_value'), currency=currency) + '</td>'
             '<td class="text-right qty-in">' + f"{flt(row.get('in_qty')):,.2f}" + '</td>'
