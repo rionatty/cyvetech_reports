@@ -1,0 +1,6 @@
+app_name = "cyvetech_reports"
+app_title = "Cyvetech Reports"
+app_publisher = "Cyvetech"
+app_description = "Custom reports for Pharma Mart Limited"
+app_email = "support@cyvetech.com"
+app_license = "MIT"
