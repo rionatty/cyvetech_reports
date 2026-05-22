@@ -106,7 +106,7 @@ frappe.query_reports["Stock Movement"] = {
             }
 
             frappe.call({
-                method: "van_sales_reports.van_sales_reports.report.van_stock_movement.van_stock_movement.get_pdf_html",
+                method: "cyvetech_reports.cyvetech_reports.report.stock_movement.stock_movement.get_pdf_html",
                 args: {
                     filters: filters,
                     data: data
