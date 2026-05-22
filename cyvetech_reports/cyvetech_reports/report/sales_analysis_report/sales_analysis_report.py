@@ -11,6 +11,52 @@ from frappe.utils import (
 )
 
 
+def _company_header_html(company_doc):
+    if not company_doc:
+        return ""
+
+    logo_html = ""
+    if company_doc.company_logo:
+        logo_html = (
+            f'<img src="{company_doc.company_logo}" '
+            f'style="max-height:65px;max-width:160px;object-fit:contain;" />'
+        )
+
+    address_lines = []
+    try:
+        addr_name = frappe.db.get_value(
+            "Dynamic Link",
+            {"link_doctype": "Company", "link_name": company_doc.name, "parenttype": "Address"},
+            "parent"
+        )
+        if addr_name:
+            addr = frappe.get_doc("Address", addr_name)
+            for f in ["address_line1", "address_line2", "city", "state"]:
+                v = getattr(addr, f, None)
+                if v:
+                    address_lines.append(v)
+    except Exception:
+        pass
+
+    info = f'<div style="font-size:12pt;font-weight:700;">{company_doc.company_name}</div>'
+    for line in address_lines:
+        info += f'<div>{line}</div>'
+    if company_doc.phone_no:
+        info += f'<div><b>Tel:</b> {company_doc.phone_no}</div>'
+    if company_doc.email:
+        info += f'<div><b>Email:</b> {company_doc.email}</div>'
+    if company_doc.website:
+        info += f'<div><b>Web:</b> {company_doc.website}</div>'
+
+    return (
+        '<div style="display:flex;justify-content:space-between;align-items:center;'
+        'margin-bottom:10px;padding-bottom:8px;border-bottom:2px solid #5e72e4;">'
+        f'<div>{logo_html}</div>'
+        f'<div style="text-align:right;font-size:8.5pt;color:#2d3748;line-height:1.7;">{info}</div>'
+        '</div>'
+    )
+
+
 def execute(filters=None):
     filters = filters or {}
     validate_filters(filters)
@@ -506,13 +552,7 @@ def get_pdf_html(filters, data, columns=None):
     company_doc = frappe.get_doc("Company", company) if company else None
     currency = company_doc.default_currency if company_doc else "USD"
 
-    letter_head = ""
-    if company_doc and company_doc.default_letter_head:
-        try:
-            lh = frappe.get_doc("Letter Head", company_doc.default_letter_head)
-            letter_head = frappe.render_template(lh.content or "", {"company": company_doc})
-        except Exception:
-            letter_head = ""
+    letter_head_html = _company_header_html(company_doc)
 
     group_by = filters.get("group_by") or "Detailed"
 
@@ -558,7 +598,6 @@ def get_pdf_html(filters, data, columns=None):
 
     now = format_datetime(get_datetime(), "dd MMM yyyy HH:mm")
     css = get_pdf_css()
-    letter_head_html = ('<div class="letter-head">' + letter_head + '</div>') if letter_head else ''
 
     html = (
         '<!DOCTYPE html><html><head><meta charset="UTF-8">'
