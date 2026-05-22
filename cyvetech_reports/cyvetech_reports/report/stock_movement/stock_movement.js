@@ -1,7 +1,7 @@
 // Copyright (c) 2024, Your Company and contributors
 // For license information, please see license.txt
 
-frappe.query_reports["Van Stock Movement"] = {
+frappe.query_reports["Stock Movement"] = {
     "filters": [
         {
             "fieldname": "from_date",
