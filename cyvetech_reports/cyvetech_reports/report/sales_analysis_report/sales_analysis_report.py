@@ -249,6 +249,83 @@ def build_conditions(filters):
     return conditions, params
 
 
+def build_conditions_no_st(filters):
+    """Same conditions as build_conditions but uses EXISTS for sales_person (no Sales Team join)."""
+    conditions = " si.docstatus = 1 AND si.posting_date BETWEEN %(from_date)s AND %(to_date)s "
+    params = {
+        "from_date": getdate(filters.get("from_date")),
+        "to_date": getdate(filters.get("to_date")),
+    }
+
+    if filters.get("company"):
+        conditions += " AND si.company = %(company)s "
+        params["company"] = filters.get("company")
+
+    if filters.get("customer"):
+        conditions += " AND si.customer = %(customer)s "
+        params["customer"] = filters.get("customer")
+
+    if filters.get("customer_group"):
+        conditions += " AND si.customer_group = %(customer_group)s "
+        params["customer_group"] = filters.get("customer_group")
+
+    if filters.get("territory"):
+        conditions += " AND si.territory = %(territory)s "
+        params["territory"] = filters.get("territory")
+
+    if filters.get("item_code"):
+        conditions += " AND sii.item_code = %(item_code)s "
+        params["item_code"] = filters.get("item_code")
+
+    if filters.get("item_group"):
+        conditions += " AND sii.item_group = %(item_group)s "
+        params["item_group"] = filters.get("item_group")
+
+    if filters.get("brand"):
+        conditions += " AND sii.brand = %(brand)s "
+        params["brand"] = filters.get("brand")
+
+    if filters.get("warehouse"):
+        conditions += " AND sii.warehouse = %(warehouse)s "
+        params["warehouse"] = filters.get("warehouse")
+
+    if filters.get("sales_person"):
+        # Use EXISTS to avoid row multiplication
+        conditions += """ AND EXISTS (
+            SELECT 1 FROM `tabSales Team` _st
+            WHERE _st.parent = si.name
+              AND _st.sales_person = %(sales_person)s
+        ) """
+        params["sales_person"] = filters.get("sales_person")
+
+    if filters.get("payment_terms_template"):
+        conditions += " AND si.payment_terms_template = %(payment_terms_template)s "
+        params["payment_terms_template"] = filters.get("payment_terms_template")
+
+    if filters.get("payment_term"):
+        conditions += """ AND EXISTS (
+            SELECT 1 FROM `tabPayment Schedule` ps
+            WHERE ps.parent = si.name
+              AND ps.payment_term = %(payment_term)s
+        ) """
+        params["payment_term"] = filters.get("payment_term")
+
+    if not filters.get("include_returns"):
+        conditions += " AND COALESCE(si.is_return, 0) = 0 "
+
+    payment_status = filters.get("payment_status") or []
+    if payment_status and isinstance(payment_status[0], dict):
+        payment_status = [s.get("value") for s in payment_status]
+
+    if payment_status:
+        placeholders = ", ".join([f"%(status_{i})s" for i in range(len(payment_status))])
+        conditions += f" AND si.status IN ({placeholders}) "
+        for i, s in enumerate(payment_status):
+            params[f"status_{i}"] = s
+
+    return conditions, params
+
+
 def get_raw_data(filters):
     """Pull invoice line items joined with sales team."""
     conditions, params = build_conditions(filters)
@@ -302,14 +379,16 @@ def get_raw_data(filters):
 
 
 def get_data(filters):
+    group_by = filters.get("group_by") or "Detailed"
+
+    # Detailed uses a clean query without Sales Team join to avoid row multiplication
+    if group_by == "Detailed":
+        return build_detailed_clean(filters)
+
     raw = get_raw_data(filters)
     if not raw:
         return []
 
-    group_by = filters.get("group_by") or "Detailed"
-
-    if group_by == "Detailed":
-        return build_detailed(raw)
     if group_by == "Route":
         return build_grouped(raw, key_field="sales_person")
     if group_by == "Customer":
@@ -323,7 +402,7 @@ def get_data(filters):
     if group_by == "Date":
         return build_grouped(raw, key_field="posting_date")
 
-    return build_detailed(raw)
+    return build_detailed_clean(filters)
 
 
 def build_detailed(raw):
@@ -363,6 +442,72 @@ def build_detailed(raw):
             "paid_amount": paid_amt,
             "outstanding": outstanding,
         })
+    return data
+
+
+def build_detailed_clean(filters):
+    """Detailed view without Sales Team join — eliminates row multiplication from multi-salesperson invoices."""
+    conditions, params = build_conditions_no_st(filters)
+
+    query = f"""
+        SELECT
+            si.name                   AS invoice,
+            si.posting_date           AS posting_date,
+            si.status                 AS status,
+            si.payment_terms_template AS payment_terms_template,
+            si.customer               AS customer,
+            si.customer_name          AS customer_name,
+            si.customer_group         AS customer_group,
+            si.territory              AS territory,
+            si.grand_total            AS grand_total,
+            si.outstanding_amount     AS outstanding_amount,
+            si.is_return              AS is_return,
+            sii.item_code             AS item_code,
+            sii.item_name             AS item_name,
+            sii.item_group            AS item_group,
+            sii.brand                 AS brand,
+            sii.uom                   AS uom,
+            sii.qty                   AS qty,
+            sii.rate                  AS rate,
+            sii.discount_amount       AS discount_amount,
+            sii.amount                AS net_total,
+            sii.warehouse             AS warehouse
+        FROM `tabSales Invoice` si
+        INNER JOIN `tabSales Invoice Item` sii ON sii.parent = si.name
+        WHERE {conditions}
+        ORDER BY si.posting_date, si.name, sii.idx
+    """
+
+    rows = frappe.db.sql(query, params, as_dict=1) or []
+    data = []
+    seen_invoices = set()
+
+    for r in rows:
+        first_of_invoice = r.invoice not in seen_invoices
+        seen_invoices.add(r.invoice)
+
+        data.append({
+            "posting_date": r.posting_date,
+            "invoice": r.invoice,
+            "status": r.status or "",
+            "payment_terms_template": r.payment_terms_template or "",
+            "sales_person": "",
+            "customer": r.customer,
+            "customer_name": r.customer_name,
+            "item_code": r.item_code,
+            "item_name": r.item_name,
+            "item_group": r.item_group,
+            "qty": flt(r.qty),
+            "uom": r.uom,
+            "rate": flt(r.rate),
+            "discount_amount": flt(r.discount_amount),
+            "net_total": flt(r.net_total),
+            # Invoice-level totals only on the first item row of each invoice
+            "grand_total": flt(r.grand_total) if first_of_invoice else 0.0,
+            "paid_amount": flt(r.grand_total - r.outstanding_amount) if first_of_invoice else 0.0,
+            "outstanding": flt(r.outstanding_amount) if first_of_invoice else 0.0,
+        })
+
     return data
 
 
@@ -900,21 +1045,35 @@ def build_pdf_table(data, group_by, currency, total_qty, total_net,
     )
 
     rows_html = ""
+    seen_inv_pdf = set()
     for idx, r in enumerate(data, 1):
         cls = "even" if idx % 2 == 0 else "odd"
+        inv = r.get("invoice") or ""
+        is_first = inv not in seen_inv_pdf
+        if inv:
+            seen_inv_pdf.add(inv)
+
+        # Suppress repeating header cells for same invoice
+        date_cell = formatdate(r.get("posting_date")) if (is_first and r.get("posting_date")) else ""
+        invoice_cell = inv if is_first else ""
+        customer_cell = (r.get("customer") or "") if is_first else ""
+        cust_name_cell = (r.get("customer_name") or "") if is_first else ""
+        grand_total_val = flt(r.get("grand_total"))
+        grand_total_cell = fmt(grand_total_val) if grand_total_val else "-"
+
         rows_html += (
             f'<tr class="{cls}">'
             f'<td class="text-center">{idx}</td>'
-            f'<td class="text-center">{formatdate(r.get("posting_date")) if r.get("posting_date") else "-"}</td>'
-            f'<td>{r.get("invoice") or "-"}</td>'
-            f'<td>{r.get("customer") or "-"}</td>'
-            f'<td>{r.get("customer_name") or "-"}</td>'
+            f'<td class="text-center">{date_cell}</td>'
+            f'<td>{invoice_cell}</td>'
+            f'<td>{customer_cell}</td>'
+            f'<td>{cust_name_cell}</td>'
             f'<td>{r.get("item_name") or "-"}</td>'
             f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
             f'<td>{r.get("uom") or "-"}</td>'
             f'<td class="text-right">{fmt(r.get("rate"))}</td>'
             f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-            f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
+            f'<td class="text-right">{grand_total_cell}</td>'
             f'</tr>'
         )
 
