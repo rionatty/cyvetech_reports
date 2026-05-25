@@ -130,7 +130,8 @@ frappe.query_reports["Sales Analysis Report"] = {
     onload: function (report) {
         report.page.add_inner_button(__("Print PDF"), function () {
             const filters = report.get_values();
-            const data = report.data || [];
+            // Strip any auto-added Frappe totals row (add_total_row feature) before sending to PDF
+            const data = (report.data || []).filter(row => !row.is_total_row);
 
             if (!data.length) {
                 frappe.msgprint(__("Run the report first."));
