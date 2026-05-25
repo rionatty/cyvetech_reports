@@ -130,19 +130,18 @@ frappe.query_reports["Sales Analysis Report"] = {
     onload: function (report) {
         report.page.add_inner_button(__("Print PDF"), function () {
             const filters = report.get_values();
-            // Strip any auto-added Frappe totals row (add_total_row feature) before sending to PDF
-            const data = (report.data || []).filter(row => !row.is_total_row);
 
-            if (!data.length) {
+            if (!report.data || !report.data.length) {
                 frappe.msgprint(__("Run the report first."));
                 return;
             }
 
+            // Data is regenerated server-side from filters so the PDF is
+            // never affected by Frappe's auto-totals row or client-side state.
             frappe.call({
                 method: "cyvetech_reports.cyvetech_reports.report.sales_analysis_report.sales_analysis_report.get_pdf_html",
                 args: {
-                    filters: JSON.stringify(filters),
-                    data: JSON.stringify(data)
+                    filters: JSON.stringify(filters)
                 },
                 freeze: true,
                 freeze_message: __("Generating PDF..."),

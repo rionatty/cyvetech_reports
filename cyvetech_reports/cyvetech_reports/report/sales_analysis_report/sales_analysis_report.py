@@ -687,11 +687,13 @@ def get_chart_data(data, filters):
 # ============================================================
 
 @frappe.whitelist()
-def get_pdf_html(filters, data, columns=None):
+def get_pdf_html(filters, data=None, columns=None):
     if isinstance(filters, str):
         filters = json.loads(filters)
-    if isinstance(data, str):
-        data = json.loads(data)
+
+    # Always regenerate data server-side so Frappe's auto-totals row
+    # (add_total_row feature) never contaminates the PDF totals.
+    data = get_data(filters)
 
     company = filters.get("company")
     company_doc = frappe.get_doc("Company", company) if company else None
@@ -701,11 +703,11 @@ def get_pdf_html(filters, data, columns=None):
 
     group_by = filters.get("group_by") or "Detailed"
 
-    total_net = sum(flt(d.get("net_total")) for d in data)
-    total_grand = sum(flt(d.get("grand_total")) for d in data)
-    total_paid = sum(flt(d.get("paid_amount")) for d in data)
+    total_net   = sum(flt(d.get("net_total"))    for d in data)
+    total_grand = sum(flt(d.get("grand_total"))  for d in data)
+    total_paid  = sum(flt(d.get("paid_amount"))  for d in data)
     total_outstanding = sum(flt(d.get("outstanding")) for d in data)
-    total_qty = sum(flt(d.get("qty")) for d in data)
+    total_qty   = sum(flt(d.get("qty"))          for d in data)
 
     # Filter summary
     filter_html = ""
