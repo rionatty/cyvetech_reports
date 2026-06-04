@@ -155,6 +155,22 @@ def get_columns(filters):
             {"label": _("Outstanding"), "fieldname": "outstanding", "fieldtype": "Currency", "width": 130},
         ]
 
+    if group_by == "Invoice":
+        return [
+            {"label": _("Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 100},
+            {"label": _("Invoice"), "fieldname": "invoice", "fieldtype": "Link",
+             "options": "Sales Invoice", "width": 150},
+            {"label": _("Customer"), "fieldname": "customer", "fieldtype": "Link",
+             "options": "Customer", "width": 150},
+            {"label": _("Customer Name"), "fieldname": "customer_name", "fieldtype": "Data", "width": 180},
+            {"label": _("Items"), "fieldname": "item_count", "fieldtype": "Int", "width": 70},
+            {"label": _("Qty"), "fieldname": "qty", "fieldtype": "Float", "width": 90},
+            {"label": _("Net Total"), "fieldname": "net_total", "fieldtype": "Currency", "width": 130},
+            {"label": _("Grand Total"), "fieldname": "grand_total", "fieldtype": "Currency", "width": 140},
+            {"label": _("Paid"), "fieldname": "paid_amount", "fieldtype": "Currency", "width": 130},
+            {"label": _("Outstanding"), "fieldname": "outstanding", "fieldtype": "Currency", "width": 130},
+        ]
+
     # DETAILED
     return [
         {"label": _("Date"), "fieldname": "posting_date", "fieldtype": "Date", "width": 90},
@@ -403,6 +419,9 @@ def get_data(filters):
     if group_by == "Detailed":
         return build_detailed_clean(filters)
 
+    if group_by == "Invoice":
+        return build_invoice_grouped(filters)
+
     raw = get_raw_data(filters)
     if not raw:
         return []
@@ -526,6 +545,53 @@ def build_detailed_clean(filters):
             "outstanding": flt(r.outstanding_amount) if first_of_invoice else 0.0,
         })
 
+    return data
+
+
+def build_invoice_grouped(filters):
+    """One row per Sales Invoice. Uses a clean query (no Sales Team join) so
+    invoice-level totals stay exact and there's no row multiplication."""
+    conditions, params = build_conditions_no_st(filters)
+
+    query = f"""
+        SELECT
+            si.name               AS invoice,
+            si.posting_date       AS posting_date,
+            si.status             AS status,
+            si.customer           AS customer,
+            si.customer_name      AS customer_name,
+            si.customer_group     AS customer_group,
+            si.grand_total        AS grand_total,
+            si.outstanding_amount AS outstanding_amount,
+            COUNT(DISTINCT sii.item_code) AS item_count,
+            SUM(sii.qty)          AS qty,
+            SUM(sii.amount)       AS net_total
+        FROM `tabSales Invoice` si
+        INNER JOIN `tabSales Invoice Item` sii ON sii.parent = si.name
+        WHERE {conditions}
+        GROUP BY si.name
+        ORDER BY si.posting_date, si.name
+    """
+
+    rows = frappe.db.sql(query, params, as_dict=1) or []
+    data = []
+    for r in rows:
+        grand = flt(r.grand_total)
+        outstanding = flt(r.outstanding_amount)
+        data.append({
+            "posting_date": r.posting_date,
+            "invoice": r.invoice,
+            "status": r.status or "",
+            "customer": r.customer,
+            "customer_name": r.customer_name,
+            "customer_group": r.customer_group,
+            "item_count": int(r.item_count or 0),
+            "qty": flt(r.qty),
+            "net_total": flt(r.net_total),
+            "grand_total": grand,
+            "paid_amount": grand - outstanding,
+            "outstanding": outstanding,
+        })
     return data
 
 
@@ -682,6 +748,7 @@ def get_chart_data(data, filters):
         "sales_person" if group_by == "Route" else
         "customer" if group_by == "Customer" else
         "item_code" if group_by == "Item" else
+        "invoice" if group_by == "Invoice" else
         "item_group"
     )
 
@@ -1039,6 +1106,53 @@ def build_pdf_table(data, group_by, currency, total_qty, total_net,
         totals_html = (
             '<tr class="totals-row">'
             '<td colspan="4" class="text-right"><strong>GRAND TOTAL</strong></td>'
+            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
+            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
+            f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
+            f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>'
+            f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>'
+            '</tr>'
+        )
+        return headers_html, rows_html, totals_html
+
+    # ====== INVOICE ======
+    if group_by == "Invoice":
+        headers_html = (
+            '<tr>'
+            '<th class="text-center">#</th>'
+            '<th class="text-center">Date</th>'
+            '<th>Invoice</th>'
+            '<th>Customer</th>'
+            '<th>Customer Name</th>'
+            '<th class="text-center">Items</th>'
+            '<th class="text-right">Qty</th>'
+            '<th class="text-right">Net Total</th>'
+            '<th class="text-right">Grand Total</th>'
+            '<th class="text-right">Paid</th>'
+            '<th class="text-right">Outstanding</th>'
+            '</tr>'
+        )
+        rows_html = ""
+        for idx, r in enumerate(data, 1):
+            cls = "even" if idx % 2 == 0 else "odd"
+            rows_html += (
+                f'<tr class="{cls}">'
+                f'<td class="text-center">{idx}</td>'
+                f'<td class="text-center">{formatdate(r.get("posting_date")) if r.get("posting_date") else "-"}</td>'
+                f'<td>{r.get("invoice") or "-"}</td>'
+                f'<td>{r.get("customer") or "-"}</td>'
+                f'<td>{r.get("customer_name") or "-"}</td>'
+                f'<td class="text-center">{r.get("item_count") or 0}</td>'
+                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
+                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
+                f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
+                f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>'
+                f'<td class="text-right">{fmt(r.get("outstanding"))}</td>'
+                f'</tr>'
+            )
+        totals_html = (
+            '<tr class="totals-row">'
+            '<td colspan="6" class="text-right"><strong>GRAND TOTAL</strong></td>'
             f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
             f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
             f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'

@@ -26,6 +26,13 @@ frappe.query_reports["Stock Movement"] = {
             "reqd": 1
         },
         {
+            "fieldname": "group_by",
+            "label": __("Group By"),
+            "fieldtype": "Select",
+            "options": "Summary\nMonthly",
+            "default": "Summary"
+        },
+        {
             "fieldname": "warehouse",
             "label": __("Warehouse"),
             "fieldtype": "Link",

@@ -26,7 +26,7 @@ frappe.query_reports["Sales Analysis Report"] = {
             fieldname: "group_by",
             label: __("Group By"),
             fieldtype: "Select",
-            options: "Detailed\nRoute\nCustomer\nItem\nItem Group\nDate",
+            options: "Detailed\nInvoice\nRoute\nCustomer\nItem\nItem Group\nDate",
             default: "Detailed"
         },
         {

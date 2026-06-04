@@ -5,7 +5,7 @@
 import json
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate, fmt_money, formatdate, format_datetime, get_datetime
+from frappe.utils import add_days, flt, fmt_money, formatdate, format_datetime, get_datetime, get_last_day, getdate
 
 
 def _company_header_html(company_doc):
@@ -58,8 +58,9 @@ def execute(filters=None):
     filters = filters or {}
     validate_filters(filters)
 
-    columns = get_columns()
-    data = get_data(filters)
+    group_by = filters.get("group_by") or "Summary"
+    columns = get_columns(filters)
+    data = get_data_monthly(filters) if group_by == "Monthly" else get_data(filters)
     report_summary = get_report_summary(data)
     chart = get_chart_data(data)
 
@@ -77,8 +78,14 @@ def validate_filters(filters):
         frappe.throw(_("Company is mandatory"))
 
 
-def get_columns():
-    return [
+def get_columns(filters=None):
+    filters = filters or {}
+    prefix = (
+        [{"label": _("Month"), "fieldname": "month", "fieldtype": "Data", "width": 110}]
+        if (filters.get("group_by") or "Summary") == "Monthly"
+        else []
+    )
+    return prefix + [
         {"label": _("Item Code"), "fieldname": "item_code", "fieldtype": "Link",
          "options": "Item", "width": 140},
         {"label": _("Item Name"), "fieldname": "item_name", "fieldtype": "Data", "width": 200},
@@ -181,6 +188,97 @@ def get_data(filters):
             data.append(row)
 
     data.sort(key=lambda x: (x["warehouse"] or "", x["item_code"] or ""))
+    return data
+
+
+def get_data_monthly(filters):
+    """One row per item + warehouse + month, with Opening/In/Out/Closing for each month.
+
+    Opening for each month = Closing of the previous month (or the pre-period
+    balance for the first month), so the chain is always consistent.
+    Only months where an item actually moved are emitted; the balance still
+    carries forward correctly for subsequent months.
+    """
+    from_date = getdate(filters.get("from_date"))
+    to_date = getdate(filters.get("to_date"))
+
+    # Build calendar-aligned month ranges within the period
+    month_ranges = []
+    cur = from_date
+    while cur <= to_date:
+        last = get_last_day(cur)
+        month_ranges.append((cur, last if last < to_date else to_date))
+        cur = getdate(add_days(last, 1))
+
+    item_codes = get_filtered_items(filters)
+    has_item_filter = bool(
+        filters.get("item_code") or filters.get("item_group") or filters.get("brand")
+    )
+    if has_item_filter and not item_codes:
+        return []
+
+    # Opening balance before the full period (same query as Summary mode)
+    opening_rows = get_opening_balance(filters, item_codes)
+    balance_map = {
+        (r.item_code, r.warehouse): {
+            "opening_qty": flt(r.opening_qty),
+            "opening_value": flt(r.opening_value),
+        }
+        for r in opening_rows
+    }
+
+    # Fetch movements for every month first so we can resolve item details once
+    monthly_movements = []
+    all_item_codes_seen = set(k[0] for k in balance_map)
+    for month_start, month_end in month_ranges:
+        month_filters = {**filters, "from_date": str(month_start), "to_date": str(month_end)}
+        movements = get_period_movements(month_filters, item_codes)
+        label = formatdate(str(month_start), "MMM yyyy")
+        monthly_movements.append((label, movements))
+        for r in movements:
+            all_item_codes_seen.add(r.item_code)
+
+    item_details = get_item_details(list(all_item_codes_seen)) if all_item_codes_seen else {}
+
+    data = []
+    for label, movements in monthly_movements:
+        for row in movements:
+            key = (row.item_code, row.warehouse)
+            opening = balance_map.get(key, {"opening_qty": 0.0, "opening_value": 0.0})
+
+            opening_qty = flt(opening["opening_qty"])
+            opening_value = flt(opening["opening_value"])
+            in_qty = flt(row.in_qty)
+            in_value = flt(row.in_value)
+            out_qty = flt(row.out_qty)
+            out_value = flt(row.out_value)
+
+            closing_qty = flt(opening_qty + in_qty - out_qty, 3)
+            closing_value = flt(opening_value + in_value - out_value, 2)
+
+            info = item_details.get(row.item_code, {})
+            data.append({
+                "month": label,
+                "item_code": row.item_code,
+                "item_name": info.get("item_name"),
+                "item_group": info.get("item_group"),
+                "brand": info.get("brand"),
+                "stock_uom": info.get("stock_uom"),
+                "warehouse": row.warehouse,
+                "opening_qty": opening_qty,
+                "opening_value": opening_value,
+                "in_qty": in_qty,
+                "in_value": in_value,
+                "out_qty": out_qty,
+                "out_value": out_value,
+                "closing_qty": closing_qty,
+                "closing_value": closing_value,
+                "valuation_rate": flt(closing_value / closing_qty, 2) if closing_qty else 0.0,
+            })
+
+            # Carry closing forward as opening for the next month
+            balance_map[key] = {"opening_qty": closing_qty, "opening_value": closing_value}
+
     return data
 
 
@@ -453,12 +551,15 @@ def get_pdf_html(filters, data, columns=None):
     total_closing_qty = sum(flt(d.get("closing_qty")) for d in data)
     total_closing_value = sum(flt(d.get("closing_value")) for d in data)
 
+    is_monthly = (filters.get("group_by") or "Summary") == "Monthly"
+
     # Build filter summary
     filter_html = ""
     filter_map = [
         ("From Date", formatdate(filters.get("from_date")) if filters.get("from_date") else ""),
         ("To Date", formatdate(filters.get("to_date")) if filters.get("to_date") else ""),
         ("Company", filters.get("company") or ""),
+        ("Group By", filters.get("group_by") or "Summary"),
         ("Warehouse", filters.get("warehouse") or "All"),
         ("Price List", filters.get("price_list") or "Standard Selling"),
         ("Item Group", filters.get("item_group") or "All"),
@@ -478,10 +579,12 @@ def get_pdf_html(filters, data, columns=None):
     for idx, row in enumerate(data, 1):
         row_class = "even" if idx % 2 == 0 else "odd"
         closing_qty_class = "negative" if flt(row.get("closing_qty")) < 0 else ""
+        month_cell = ('<td>' + str(row.get('month') or '') + '</td>') if is_monthly else ""
 
         rows_html += (
             '<tr class="' + row_class + '">'
             '<td class="text-center">' + str(idx) + '</td>'
+            + month_cell +
             '<td><strong>' + str(row.get('item_code') or '') + '</strong></td>'
             '<td>' + str(row.get('item_name') or '') + '</td>'
             '<td class="text-muted">' + str(row.get('item_group') or '') + '</td>'
@@ -499,10 +602,10 @@ def get_pdf_html(filters, data, columns=None):
             '</tr>'
         )
 
-    # Build totals row
+    # Build totals row — colspan includes the Month column when in Monthly mode
     totals_html = (
         '<tr class="totals-row">'
-        '<td colspan="7" class="text-right"><strong>TOTAL</strong></td>'
+        '<td colspan="' + ("8" if is_monthly else "7") + '" class="text-right"><strong>TOTAL</strong></td>'
         '<td class="text-right"><strong>' + f"{total_opening_qty:,.2f}" + '</strong></td>'
         '<td class="text-right"><strong>' + fmt_money(total_opening_value, currency=currency) + '</strong></td>'
         '<td class="text-right qty-in"><strong>' + f"{total_in_qty:,.2f}" + '</strong></td>'
@@ -630,6 +733,7 @@ def get_pdf_html(filters, data, columns=None):
 
         '<table class="report-table"><thead><tr>'
             '<th class="text-center">#</th>'
+            + ('<th>Month</th>' if is_monthly else '') +
             '<th>Item Code</th>'
             '<th>Item Name</th>'
             '<th>Group</th>'
