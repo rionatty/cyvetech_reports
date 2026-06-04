@@ -157,7 +157,7 @@ frappe.query_reports["Stock Movement"] = {
         // Show only month group rows (collapsed view)
         const collapsed = data.filter(r => r.is_group);
         report.data = collapsed;
-        datatable.refresh(collapsed, report.columns);
+        datatable.refresh(collapsed);
     },
 
     // ----------------------------------------------------------------
@@ -166,27 +166,34 @@ frappe.query_reports["Stock Movement"] = {
     onload: function(report) {
 
         // ── Expand / collapse click handler ──────────────────────────
-        // Delegated on the report wrapper so it survives datatable re-renders.
-        $(report.wrapper).on("click", ".sm-month-toggle", function(e) {
-            e.stopPropagation();
+        // Bound on document so Frappe DataTable's cell-click interception
+        // cannot block the event before it reaches our handler.
+        // The .sm_smr namespace lets us safely remove it on re-load.
+        $(document)
+            .off("click.sm_smr")
+            .on("click.sm_smr", ".sm-month-toggle", function(e) {
+                e.stopPropagation();
+                e.preventDefault();
 
-            if (!_sm_state.all_data) return;
+                if (!_sm_state.all_data) return;
 
-            const month = $(this).data("month");
-            if (_sm_state.expanded.has(month)) {
-                _sm_state.expanded.delete(month);
-            } else {
-                _sm_state.expanded.add(month);
-            }
+                const month = $(this).data("month");
+                if (!month) return;
 
-            // Rebuild visible rows: all group headers + items of expanded months
-            const visible = _sm_state.all_data.filter(
-                r => r.is_group || _sm_state.expanded.has(r.month)
-            );
+                if (_sm_state.expanded.has(month)) {
+                    _sm_state.expanded.delete(month);
+                } else {
+                    _sm_state.expanded.add(month);
+                }
 
-            report.data = visible;
-            report.datatable.refresh(visible, report.columns);
-        });
+                // Rebuild visible rows: all group headers + items of expanded months
+                const visible = _sm_state.all_data.filter(
+                    r => r.is_group || _sm_state.expanded.has(r.month)
+                );
+
+                report.data = visible;
+                report.datatable.refresh(visible);
+            });
 
         // ── Print PDF button ─────────────────────────────────────────
         // Sends exactly what the user currently sees:
