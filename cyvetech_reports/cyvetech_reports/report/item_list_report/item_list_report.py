@@ -94,6 +94,9 @@ def get_data(filters):
     conditions = "i.docstatus < 2"
     params     = {}
 
+    # Always exclude Fixed Asset items
+    conditions += " AND COALESCE(i.is_fixed_asset, 0) = 0"
+
     if not filters.get("disabled"):
         conditions += " AND i.disabled = 0"
 
@@ -113,6 +116,23 @@ def get_data(filters):
 
     if filters.get("is_stock_item"):
         conditions += " AND i.is_stock_item = 1"
+
+    # Show only items that have stock on hand (actual_qty > 0 in any warehouse of the company)
+    if filters.get("stock_on_hand_only"):
+        company = filters.get("company")
+        if company:
+            conditions += """ AND i.name IN (
+                SELECT b.item_code
+                FROM `tabBin` b
+                INNER JOIN `tabWarehouse` wh ON wh.name = b.warehouse
+                WHERE wh.company = %(stock_company)s
+                  AND b.actual_qty > 0
+            )"""
+            params["stock_company"] = company
+        else:
+            conditions += """ AND i.name IN (
+                SELECT item_code FROM `tabBin` WHERE actual_qty > 0
+            )"""
 
     raw = frappe.db.sql("""
         SELECT

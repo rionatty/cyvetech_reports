@@ -48,6 +48,12 @@ frappe.query_reports["Item List Report"] = {
             fieldtype: "Check",
             default: 0
         },
+        {
+            fieldname: "stock_on_hand_only",
+            label: __("With Stock On Hand Only"),
+            fieldtype: "Check",
+            default: 1
+        },
 
         // -- Extra Columns Selector ----------------------------
         {
