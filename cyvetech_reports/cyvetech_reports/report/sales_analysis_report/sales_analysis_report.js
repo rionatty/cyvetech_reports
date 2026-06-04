@@ -144,10 +144,18 @@ frappe.query_reports["Sales Analysis Report"] = {
 
             // Data is regenerated server-side from filters so the PDF is
             // never affected by Frappe's auto-totals row or client-side state.
+            // Collect the fieldnames of columns that are currently visible
+            // (Frappe removes hidden columns from report.columns, or marks them hidden:1)
+            const visible_cols = (report.columns || [])
+                .filter(c => !c.hidden)
+                .map(c => c.fieldname)
+                .filter(Boolean);
+
             frappe.call({
                 method: "cyvetech_reports.cyvetech_reports.report.sales_analysis_report.sales_analysis_report.get_pdf_html",
                 args: {
-                    filters: JSON.stringify(filters)
+                    filters: JSON.stringify(filters),
+                    visible_columns: JSON.stringify(visible_cols)
                 },
                 freeze: true,
                 freeze_message: __("Generating PDF..."),

@@ -772,9 +772,13 @@ def get_chart_data(data, filters):
 # ============================================================
 
 @frappe.whitelist()
-def get_pdf_html(filters, data=None, columns=None):
+def get_pdf_html(filters, data=None, columns=None, visible_columns=None):
     if isinstance(filters, str):
         filters = json.loads(filters)
+
+    if isinstance(visible_columns, str):
+        visible_columns = json.loads(visible_columns or "[]")
+    visible_columns = visible_columns or []
 
     # Always regenerate data server-side so Frappe's auto-totals row
     # (add_total_row feature) never contaminates the PDF totals.
@@ -826,7 +830,8 @@ def get_pdf_html(filters, data=None, columns=None):
 
     headers_html, rows_html, totals_html = build_pdf_table(
         data, group_by, currency, total_qty, total_net,
-        total_grand, total_paid, total_outstanding
+        total_grand, total_paid, total_outstanding,
+        visible_columns
     )
 
     now = format_datetime(get_datetime(), "dd MMM yyyy HH:mm")
@@ -899,332 +904,273 @@ def get_pdf_html(filters, data=None, columns=None):
 
 
 def build_pdf_table(data, group_by, currency, total_qty, total_net,
-                    total_grand, total_paid, total_outstanding):
-    """Build headers, rows and totals based on group_by."""
+                    total_grand, total_paid, total_outstanding,
+                    visible_cols=None):
+    """Build headers, rows and totals based on group_by.
 
-    fmt = lambda v: fmt_money(v, currency=currency) if flt(v) else "-"
+    visible_cols: list of fieldnames currently visible in the UI.
+    Empty/None means show all columns (backward-compatible default).
+    """
+    fmt     = lambda v: fmt_money(v, currency=currency) if flt(v) else "-"
     qty_fmt = lambda v: "{:,.2f}".format(flt(v)) if flt(v) else "-"
+
+    def vis(f):
+        return not visible_cols or f in visible_cols
 
     # ====== ROUTE ======
     if group_by == "Route":
-        headers_html = (
-            '<tr>'
-            '<th class="text-center">#</th>'
-            '<th>Route</th>'
-            '<th class="text-center">Invoices</th>'
-            '<th class="text-center">Customers</th>'
-            '<th class="text-right">Qty</th>'
-            '<th class="text-right">Net Total</th>'
-            '<th class="text-right">Grand Total</th>'
-            '<th class="text-right">Paid</th>'
-            '<th class="text-right">Outstanding</th>'
-            '</tr>'
-        )
+        ths = ['<th class="text-center">#</th>']
+        if vis("sales_person"):   ths.append("<th>Route</th>")
+        if vis("invoice_count"):  ths.append('<th class="text-center">Invoices</th>')
+        if vis("customer_count"): ths.append('<th class="text-center">Customers</th>')
+        if vis("qty"):            ths.append('<th class="text-right">Qty</th>')
+        if vis("net_total"):      ths.append('<th class="text-right">Net Total</th>')
+        if vis("grand_total"):    ths.append('<th class="text-right">Grand Total</th>')
+        if vis("paid_amount"):    ths.append('<th class="text-right">Paid</th>')
+        if vis("outstanding"):    ths.append('<th class="text-right">Outstanding</th>')
+        headers_html = "<tr>" + "".join(ths) + "</tr>"
+        n = 1 + sum([vis("sales_person"), vis("invoice_count"), vis("customer_count")])
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
-            rows_html += (
-                f'<tr class="{cls}">'
-                f'<td class="text-center">{idx}</td>'
-                f'<td><strong>{r.get("sales_person") or "-"}</strong></td>'
-                f'<td class="text-center">{r.get("invoice_count") or 0}</td>'
-                f'<td class="text-center">{r.get("customer_count") or 0}</td>'
-                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>'
-                f'<td class="text-right">{fmt(r.get("outstanding"))}</td>'
-                f'</tr>'
-            )
-        totals_html = (
-            '<tr class="totals-row">'
-            '<td colspan="4" class="text-right"><strong>GRAND TOTAL</strong></td>'
-            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>'
-            '</tr>'
-        )
-        return headers_html, rows_html, totals_html
+            sp  = r.get("sales_person") or "-"
+            tds = [f'<td class="text-center">{idx}</td>']
+            if vis("sales_person"):   tds.append(f"<td><strong>{sp}</strong></td>")
+            if vis("invoice_count"):  tds.append(f'<td class="text-center">{r.get("invoice_count") or 0}</td>')
+            if vis("customer_count"): tds.append(f'<td class="text-center">{r.get("customer_count") or 0}</td>')
+            if vis("qty"):            tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+            if vis("net_total"):      tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+            if vis("grand_total"):    tds.append(f'<td class="text-right">{fmt(r.get("grand_total"))}</td>')
+            if vis("paid_amount"):    tds.append(f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>')
+            if vis("outstanding"):    tds.append(f'<td class="text-right">{fmt(r.get("outstanding"))}</td>')
+            rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+        tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+        if vis("qty"):         tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+        if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+        if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
+        if vis("paid_amount"): tot.append(f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>')
+        if vis("outstanding"): tot.append(f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>')
+        return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
     # ====== CUSTOMER ======
     if group_by == "Customer":
-        headers_html = (
-            '<tr>'
-            '<th class="text-center">#</th>'
-            '<th>Customer</th>'
-            '<th>Customer Name</th>'
-            '<th>Group</th>'
-            '<th class="text-center">Inv</th>'
-            '<th class="text-right">Qty</th>'
-            '<th class="text-right">Net Total</th>'
-            '<th class="text-right">Grand Total</th>'
-            '<th class="text-right">Paid</th>'
-            '<th class="text-right">Outstanding</th>'
-            '</tr>'
-        )
+        ths = ['<th class="text-center">#</th>']
+        if vis("customer"):       ths.append("<th>Customer</th>")
+        if vis("customer_name"):  ths.append("<th>Customer Name</th>")
+        if vis("customer_group"): ths.append("<th>Group</th>")
+        if vis("invoice_count"):  ths.append('<th class="text-center">Inv</th>')
+        if vis("qty"):            ths.append('<th class="text-right">Qty</th>')
+        if vis("net_total"):      ths.append('<th class="text-right">Net Total</th>')
+        if vis("grand_total"):    ths.append('<th class="text-right">Grand Total</th>')
+        if vis("paid_amount"):    ths.append('<th class="text-right">Paid</th>')
+        if vis("outstanding"):    ths.append('<th class="text-right">Outstanding</th>')
+        headers_html = "<tr>" + "".join(ths) + "</tr>"
+        n = 1 + sum([vis("customer"), vis("customer_name"), vis("customer_group"), vis("invoice_count")])
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
-            rows_html += (
-                f'<tr class="{cls}">'
-                f'<td class="text-center">{idx}</td>'
-                f'<td>{r.get("customer") or "-"}</td>'
-                f'<td>{r.get("customer_name") or "-"}</td>'
-                f'<td>{r.get("customer_group") or "-"}</td>'
-                f'<td class="text-center">{r.get("invoice_count") or 0}</td>'
-                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>'
-                f'<td class="text-right">{fmt(r.get("outstanding"))}</td>'
-                f'</tr>'
-            )
-        totals_html = (
-            '<tr class="totals-row">'
-            '<td colspan="5" class="text-right"><strong>GRAND TOTAL</strong></td>'
-            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>'
-            '</tr>'
-        )
-        return headers_html, rows_html, totals_html
+            tds = [f'<td class="text-center">{idx}</td>']
+            if vis("customer"):       tds.append(f'<td>{r.get("customer") or "-"}</td>')
+            if vis("customer_name"):  tds.append(f'<td>{r.get("customer_name") or "-"}</td>')
+            if vis("customer_group"): tds.append(f'<td>{r.get("customer_group") or "-"}</td>')
+            if vis("invoice_count"):  tds.append(f'<td class="text-center">{r.get("invoice_count") or 0}</td>')
+            if vis("qty"):            tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+            if vis("net_total"):      tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+            if vis("grand_total"):    tds.append(f'<td class="text-right">{fmt(r.get("grand_total"))}</td>')
+            if vis("paid_amount"):    tds.append(f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>')
+            if vis("outstanding"):    tds.append(f'<td class="text-right">{fmt(r.get("outstanding"))}</td>')
+            rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+        tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+        if vis("qty"):         tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+        if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+        if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
+        if vis("paid_amount"): tot.append(f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>')
+        if vis("outstanding"): tot.append(f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>')
+        return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
     # ====== ITEM ======
     if group_by == "Item":
-        headers_html = (
-            '<tr>'
-            '<th class="text-center">#</th>'
-            '<th>Item Code</th>'
-            '<th>Item Name</th>'
-            '<th>Group</th>'
-            '<th>Brand</th>'
-            '<th>UOM</th>'
-            '<th class="text-right">Qty</th>'
-            '<th class="text-right">Avg Rate</th>'
-            '<th class="text-right">Net Total</th>'
-            '<th class="text-center">Inv</th>'
-            '</tr>'
-        )
+        ths = ['<th class="text-center">#</th>']
+        if vis("item_code"):     ths.append("<th>Item Code</th>")
+        if vis("item_name"):     ths.append("<th>Item Name</th>")
+        if vis("item_group"):    ths.append("<th>Group</th>")
+        if vis("brand"):         ths.append("<th>Brand</th>")
+        if vis("uom"):           ths.append("<th>UOM</th>")
+        if vis("qty"):           ths.append('<th class="text-right">Qty</th>')
+        if vis("avg_rate"):      ths.append('<th class="text-right">Avg Rate</th>')
+        if vis("net_total"):     ths.append('<th class="text-right">Net Total</th>')
+        if vis("invoice_count"): ths.append('<th class="text-center">Inv</th>')
+        headers_html = "<tr>" + "".join(ths) + "</tr>"
+        n = 1 + sum([vis("item_code"), vis("item_name"), vis("item_group"), vis("brand"), vis("uom")])
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
-            rows_html += (
-                f'<tr class="{cls}">'
-                f'<td class="text-center">{idx}</td>'
-                f'<td>{r.get("item_code") or "-"}</td>'
-                f'<td>{r.get("item_name") or "-"}</td>'
-                f'<td>{r.get("item_group") or "-"}</td>'
-                f'<td>{r.get("brand") or "-"}</td>'
-                f'<td>{r.get("uom") or "-"}</td>'
-                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-                f'<td class="text-right">{fmt(r.get("avg_rate"))}</td>'
-                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-                f'<td class="text-center">{r.get("invoice_count") or 0}</td>'
-                f'</tr>'
-            )
-        totals_html = (
-            '<tr class="totals-row">'
-            '<td colspan="6" class="text-right"><strong>GRAND TOTAL</strong></td>'
-            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-            '<td></td>'
-            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-            '<td></td>'
-            '</tr>'
-        )
-        return headers_html, rows_html, totals_html
+            tds = [f'<td class="text-center">{idx}</td>']
+            if vis("item_code"):     tds.append(f'<td>{r.get("item_code") or "-"}</td>')
+            if vis("item_name"):     tds.append(f'<td>{r.get("item_name") or "-"}</td>')
+            if vis("item_group"):    tds.append(f'<td>{r.get("item_group") or "-"}</td>')
+            if vis("brand"):         tds.append(f'<td>{r.get("brand") or "-"}</td>')
+            if vis("uom"):           tds.append(f'<td>{r.get("uom") or "-"}</td>')
+            if vis("qty"):           tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+            if vis("avg_rate"):      tds.append(f'<td class="text-right">{fmt(r.get("avg_rate"))}</td>')
+            if vis("net_total"):     tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+            if vis("invoice_count"): tds.append(f'<td class="text-center">{r.get("invoice_count") or 0}</td>')
+            rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+        tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+        if vis("qty"):           tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+        if vis("avg_rate"):      tot.append("<td></td>")
+        if vis("net_total"):     tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+        if vis("invoice_count"): tot.append("<td></td>")
+        return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
     # ====== ITEM GROUP ======
     if group_by == "Item Group":
-        headers_html = (
-            '<tr>'
-            '<th class="text-center">#</th>'
-            '<th>Item Group</th>'
-            '<th class="text-center">Items</th>'
-            '<th class="text-right">Qty</th>'
-            '<th class="text-right">Net Total</th>'
-            '<th class="text-right">Grand Total</th>'
-            '</tr>'
-        )
+        ths = ['<th class="text-center">#</th>']
+        if vis("item_group"):  ths.append("<th>Item Group</th>")
+        if vis("item_count"):  ths.append('<th class="text-center">Items</th>')
+        if vis("qty"):         ths.append('<th class="text-right">Qty</th>')
+        if vis("net_total"):   ths.append('<th class="text-right">Net Total</th>')
+        if vis("grand_total"): ths.append('<th class="text-right">Grand Total</th>')
+        headers_html = "<tr>" + "".join(ths) + "</tr>"
+        n = 1 + sum([vis("item_group"), vis("item_count")])
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
-            rows_html += (
-                f'<tr class="{cls}">'
-                f'<td class="text-center">{idx}</td>'
-                f'<td><strong>{r.get("item_group") or "-"}</strong></td>'
-                f'<td class="text-center">{r.get("item_count") or 0}</td>'
-                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
-                f'</tr>'
-            )
-        totals_html = (
-            '<tr class="totals-row">'
-            '<td colspan="3" class="text-right"><strong>GRAND TOTAL</strong></td>'
-            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
-            '</tr>'
-        )
-        return headers_html, rows_html, totals_html
+            ig  = r.get("item_group") or "-"
+            tds = [f'<td class="text-center">{idx}</td>']
+            if vis("item_group"):  tds.append(f"<td><strong>{ig}</strong></td>")
+            if vis("item_count"):  tds.append(f'<td class="text-center">{r.get("item_count") or 0}</td>')
+            if vis("qty"):         tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+            if vis("net_total"):   tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+            if vis("grand_total"): tds.append(f'<td class="text-right">{fmt(r.get("grand_total"))}</td>')
+            rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+        tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+        if vis("qty"):         tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+        if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+        if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
+        return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
     # ====== DATE ======
     if group_by == "Date":
-        headers_html = (
-            '<tr>'
-            '<th class="text-center">#</th>'
-            '<th class="text-center">Date</th>'
-            '<th class="text-center">Invoices</th>'
-            '<th class="text-center">Customers</th>'
-            '<th class="text-right">Qty</th>'
-            '<th class="text-right">Net Total</th>'
-            '<th class="text-right">Grand Total</th>'
-            '<th class="text-right">Paid</th>'
-            '<th class="text-right">Outstanding</th>'
-            '</tr>'
-        )
+        ths = ['<th class="text-center">#</th>']
+        if vis("posting_date"):   ths.append('<th class="text-center">Date</th>')
+        if vis("invoice_count"):  ths.append('<th class="text-center">Invoices</th>')
+        if vis("customer_count"): ths.append('<th class="text-center">Customers</th>')
+        if vis("qty"):            ths.append('<th class="text-right">Qty</th>')
+        if vis("net_total"):      ths.append('<th class="text-right">Net Total</th>')
+        if vis("grand_total"):    ths.append('<th class="text-right">Grand Total</th>')
+        if vis("paid_amount"):    ths.append('<th class="text-right">Paid</th>')
+        if vis("outstanding"):    ths.append('<th class="text-right">Outstanding</th>')
+        headers_html = "<tr>" + "".join(ths) + "</tr>"
+        n = 1 + sum([vis("posting_date"), vis("invoice_count"), vis("customer_count")])
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
-            rows_html += (
-                f'<tr class="{cls}">'
-                f'<td class="text-center">{idx}</td>'
-                f'<td class="text-center">{formatdate(r.get("posting_date")) if r.get("posting_date") else "-"}</td>'
-                f'<td class="text-center">{r.get("invoice_count") or 0}</td>'
-                f'<td class="text-center">{r.get("customer_count") or 0}</td>'
-                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>'
-                f'<td class="text-right">{fmt(r.get("outstanding"))}</td>'
-                f'</tr>'
-            )
-        totals_html = (
-            '<tr class="totals-row">'
-            '<td colspan="4" class="text-right"><strong>GRAND TOTAL</strong></td>'
-            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>'
-            '</tr>'
-        )
-        return headers_html, rows_html, totals_html
+            pd  = formatdate(r.get("posting_date")) if r.get("posting_date") else "-"
+            tds = [f'<td class="text-center">{idx}</td>']
+            if vis("posting_date"):   tds.append(f'<td class="text-center">{pd}</td>')
+            if vis("invoice_count"):  tds.append(f'<td class="text-center">{r.get("invoice_count") or 0}</td>')
+            if vis("customer_count"): tds.append(f'<td class="text-center">{r.get("customer_count") or 0}</td>')
+            if vis("qty"):            tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+            if vis("net_total"):      tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+            if vis("grand_total"):    tds.append(f'<td class="text-right">{fmt(r.get("grand_total"))}</td>')
+            if vis("paid_amount"):    tds.append(f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>')
+            if vis("outstanding"):    tds.append(f'<td class="text-right">{fmt(r.get("outstanding"))}</td>')
+            rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+        tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+        if vis("qty"):         tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+        if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+        if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
+        if vis("paid_amount"): tot.append(f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>')
+        if vis("outstanding"): tot.append(f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>')
+        return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
     # ====== INVOICE ======
     if group_by == "Invoice":
-        headers_html = (
-            '<tr>'
-            '<th class="text-center">#</th>'
-            '<th class="text-center">Date</th>'
-            '<th>Invoice</th>'
-            '<th>Customer</th>'
-            '<th>Customer Name</th>'
-            '<th class="text-center">Items</th>'
-            '<th class="text-right">Qty</th>'
-            '<th class="text-right">Net Total</th>'
-            '<th class="text-right">Grand Total</th>'
-            '<th class="text-right">Paid</th>'
-            '<th class="text-right">Outstanding</th>'
-            '</tr>'
-        )
+        ths = ['<th class="text-center">#</th>']
+        if vis("posting_date"):  ths.append('<th class="text-center">Date</th>')
+        if vis("invoice"):       ths.append("<th>Invoice</th>")
+        if vis("customer"):      ths.append("<th>Customer</th>")
+        if vis("customer_name"): ths.append("<th>Customer Name</th>")
+        if vis("item_count"):    ths.append('<th class="text-center">Items</th>')
+        if vis("qty"):           ths.append('<th class="text-right">Qty</th>')
+        if vis("net_total"):     ths.append('<th class="text-right">Net Total</th>')
+        if vis("grand_total"):   ths.append('<th class="text-right">Grand Total</th>')
+        if vis("paid_amount"):   ths.append('<th class="text-right">Paid</th>')
+        if vis("outstanding"):   ths.append('<th class="text-right">Outstanding</th>')
+        headers_html = "<tr>" + "".join(ths) + "</tr>"
+        n = 1 + sum([vis("posting_date"), vis("invoice"), vis("customer"), vis("customer_name"), vis("item_count")])
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
-            rows_html += (
-                f'<tr class="{cls}">'
-                f'<td class="text-center">{idx}</td>'
-                f'<td class="text-center">{formatdate(r.get("posting_date")) if r.get("posting_date") else "-"}</td>'
-                f'<td>{r.get("invoice") or "-"}</td>'
-                f'<td>{r.get("customer") or "-"}</td>'
-                f'<td>{r.get("customer_name") or "-"}</td>'
-                f'<td class="text-center">{r.get("item_count") or 0}</td>'
-                f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-                f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("grand_total"))}</td>'
-                f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>'
-                f'<td class="text-right">{fmt(r.get("outstanding"))}</td>'
-                f'</tr>'
-            )
-        totals_html = (
-            '<tr class="totals-row">'
-            '<td colspan="6" class="text-right"><strong>GRAND TOTAL</strong></td>'
-            f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>'
-            f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>'
-            '</tr>'
-        )
-        return headers_html, rows_html, totals_html
+            pd  = formatdate(r.get("posting_date")) if r.get("posting_date") else "-"
+            tds = [f'<td class="text-center">{idx}</td>']
+            if vis("posting_date"):  tds.append(f'<td class="text-center">{pd}</td>')
+            if vis("invoice"):       tds.append(f'<td>{r.get("invoice") or "-"}</td>')
+            if vis("customer"):      tds.append(f'<td>{r.get("customer") or "-"}</td>')
+            if vis("customer_name"): tds.append(f'<td>{r.get("customer_name") or "-"}</td>')
+            if vis("item_count"):    tds.append(f'<td class="text-center">{r.get("item_count") or 0}</td>')
+            if vis("qty"):           tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+            if vis("net_total"):     tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+            if vis("grand_total"):   tds.append(f'<td class="text-right">{fmt(r.get("grand_total"))}</td>')
+            if vis("paid_amount"):   tds.append(f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>')
+            if vis("outstanding"):   tds.append(f'<td class="text-right">{fmt(r.get("outstanding"))}</td>')
+            rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+        tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+        if vis("qty"):         tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+        if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+        if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
+        if vis("paid_amount"): tot.append(f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>')
+        if vis("outstanding"): tot.append(f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>')
+        return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
     # ====== DETAILED (default) ======
-    headers_html = (
-        '<tr>'
-        '<th class="text-center">#</th>'
-        '<th class="text-center">Date</th>'
-        '<th>Invoice</th>'
-        '<th>Customer</th>'
-        '<th>Customer Name</th>'
-        '<th>Item Name</th>'
-        '<th class="text-right">Qty</th>'
-        '<th>UOM</th>'
-        '<th class="text-right">Rate</th>'
-        '<th class="text-right">Net Amt</th>'
-        '<th class="text-right">Grand Total</th>'
-        '</tr>'
-    )
-
+    ths = ['<th class="text-center">#</th>']
+    if vis("posting_date"):  ths.append('<th class="text-center">Date</th>')
+    if vis("invoice"):       ths.append("<th>Invoice</th>")
+    if vis("customer"):      ths.append("<th>Customer</th>")
+    if vis("customer_name"): ths.append("<th>Customer Name</th>")
+    if vis("item_name"):     ths.append("<th>Item Name</th>")
+    if vis("qty"):           ths.append('<th class="text-right">Qty</th>')
+    if vis("uom"):           ths.append("<th>UOM</th>")
+    if vis("rate"):          ths.append('<th class="text-right">Rate</th>')
+    if vis("net_total"):     ths.append('<th class="text-right">Net Amt</th>')
+    if vis("grand_total"):   ths.append('<th class="text-right">Grand Total</th>')
+    headers_html = "<tr>" + "".join(ths) + "</tr>"
+    n = 1 + sum([vis("posting_date"), vis("invoice"), vis("customer"), vis("customer_name"), vis("item_name")])
     rows_html = ""
     seen_inv_pdf = set()
-    for idx, r in enumerate(data, 1):
-        cls = "even" if idx % 2 == 0 else "odd"
+    for item_idx, r in enumerate(data, 1):
+        cls = "even" if item_idx % 2 == 0 else "odd"
         inv = r.get("invoice") or ""
         is_first = inv not in seen_inv_pdf
         if inv:
             seen_inv_pdf.add(inv)
-
-        # Suppress repeating header cells for same invoice
-        date_cell = formatdate(r.get("posting_date")) if (is_first and r.get("posting_date")) else ""
-        invoice_cell = inv if is_first else ""
-        customer_cell = (r.get("customer") or "") if is_first else ""
-        cust_name_cell = (r.get("customer_name") or "") if is_first else ""
-        grand_total_val = flt(r.get("grand_total"))
-        grand_total_cell = fmt(grand_total_val) if grand_total_val else "-"
-
-        rows_html += (
-            f'<tr class="{cls}">'
-            f'<td class="text-center">{idx}</td>'
-            f'<td class="text-center">{date_cell}</td>'
-            f'<td>{invoice_cell}</td>'
-            f'<td>{customer_cell}</td>'
-            f'<td>{cust_name_cell}</td>'
-            f'<td>{r.get("item_name") or "-"}</td>'
-            f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>'
-            f'<td>{r.get("uom") or "-"}</td>'
-            f'<td class="text-right">{fmt(r.get("rate"))}</td>'
-            f'<td class="text-right">{fmt(r.get("net_total"))}</td>'
-            f'<td class="text-right">{grand_total_cell}</td>'
-            f'</tr>'
-        )
-
-    totals_html = (
-        '<tr class="totals-row">'
-        '<td colspan="6" class="text-right"><strong>GRAND TOTAL</strong></td>'
-        f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>'
-        '<td></td>'
-        '<td></td>'
-        f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>'
-        f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>'
-        '</tr>'
-    )
-
+        pd   = formatdate(r.get("posting_date")) if (is_first and r.get("posting_date")) else ""
+        invs = inv if is_first else ""
+        cust = (r.get("customer") or "") if is_first else ""
+        cnam = (r.get("customer_name") or "") if is_first else ""
+        gt   = flt(r.get("grand_total"))
+        tds  = [f'<td class="text-center">{item_idx}</td>']
+        if vis("posting_date"):  tds.append(f'<td class="text-center">{pd}</td>')
+        if vis("invoice"):       tds.append(f"<td>{invs}</td>")
+        if vis("customer"):      tds.append(f"<td>{cust}</td>")
+        if vis("customer_name"): tds.append(f"<td>{cnam}</td>")
+        if vis("item_name"):     tds.append(f'<td>{r.get("item_name") or "-"}</td>')
+        if vis("qty"):           tds.append(f'<td class="text-right">{qty_fmt(r.get("qty"))}</td>')
+        if vis("uom"):           tds.append(f'<td>{r.get("uom") or "-"}</td>')
+        if vis("rate"):          tds.append(f'<td class="text-right">{fmt(r.get("rate"))}</td>')
+        if vis("net_total"):     tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
+        if vis("grand_total"):   tds.append(f'<td class="text-right">{fmt(gt) if gt else "-"}</td>')
+        rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
+    tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
+    if vis("qty"):         tot.append(f'<td class="text-right"><strong>{qty_fmt(total_qty)}</strong></td>')
+    if vis("uom"):         tot.append("<td></td>")
+    if vis("rate"):        tot.append("<td></td>")
+    if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
+    if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
+    totals_html = '<tr class="totals-row">' + "".join(tot) + "</tr>"
     return headers_html, rows_html, totals_html
-
 
 def get_pdf_css():
     return """
