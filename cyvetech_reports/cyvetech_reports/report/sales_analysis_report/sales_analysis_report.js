@@ -144,12 +144,25 @@ frappe.query_reports["Sales Analysis Report"] = {
 
             // Data is regenerated server-side from filters so the PDF is
             // never affected by Frappe's auto-totals row or client-side state.
-            // Collect the fieldnames of columns that are currently visible
-            // (Frappe removes hidden columns from report.columns, or marks them hidden:1)
-            const visible_cols = (report.columns || [])
-                .filter(c => !c.hidden)
-                .map(c => c.fieldname)
-                .filter(Boolean);
+            // Collect fieldnames of columns currently visible in the DataTable.
+            // frappe-datatable marks hidden columns with col.hide = 1 (not col.hidden).
+            // We check both the DataTable's own column objects and report.columns
+            // as a fallback so the correct set is always captured.
+            let visible_cols = [];
+            const dt_cols = report.datatable && report.datatable.datamanager
+                && report.datatable.datamanager.columns;
+            if (dt_cols && dt_cols.length) {
+                visible_cols = dt_cols
+                    .filter(c => !c.hide)
+                    .map(c => c.id || c.fieldname)
+                    .filter(Boolean);
+            }
+            if (!visible_cols.length) {
+                visible_cols = (report.columns || [])
+                    .filter(c => !c.hide && !c.hidden)
+                    .map(c => c.fieldname || c.id)
+                    .filter(Boolean);
+            }
 
             frappe.call({
                 method: "cyvetech_reports.cyvetech_reports.report.sales_analysis_report.sales_analysis_report.get_pdf_html",
