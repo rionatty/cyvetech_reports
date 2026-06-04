@@ -192,17 +192,17 @@ def get_data(filters):
 
 
 def get_data_monthly(filters):
-    """One row per item + warehouse + month, with Opening/In/Out/Closing for each month.
+    """Returns one IS_GROUP month-header row followed by its item rows, for each
+    month in the period.
 
-    Opening for each month = Closing of the previous month (or the pre-period
-    balance for the first month), so the chain is always consistent.
-    Only months where an item actually moved are emitted; the balance still
-    carries forward correctly for subsequent months.
+    is_group=1 rows carry month-level totals (shown collapsed by default in the
+    UI). is_group=0 rows carry per-item detail (revealed when the user expands
+    a month). The balance chain is maintained across months so every month's
+    Opening = previous month's Closing.
     """
     from_date = getdate(filters.get("from_date"))
     to_date = getdate(filters.get("to_date"))
 
-    # Build calendar-aligned month ranges within the period
     month_ranges = []
     cur = from_date
     while cur <= to_date:
@@ -217,7 +217,6 @@ def get_data_monthly(filters):
     if has_item_filter and not item_codes:
         return []
 
-    # Opening balance before the full period (same query as Summary mode)
     opening_rows = get_opening_balance(filters, item_codes)
     balance_map = {
         (r.item_code, r.warehouse): {
@@ -227,7 +226,7 @@ def get_data_monthly(filters):
         for r in opening_rows
     }
 
-    # Fetch movements for every month first so we can resolve item details once
+    # Fetch all monthly movements first so item details are resolved in one query
     monthly_movements = []
     all_item_codes_seen = set(k[0] for k in balance_map)
     for month_start, month_end in month_ranges:
@@ -242,22 +241,34 @@ def get_data_monthly(filters):
 
     data = []
     for label, movements in monthly_movements:
+        if not movements:
+            continue
+
+        # ── compute item rows + accumulate month totals in one pass ──
+        m_open_qty = m_open_val = m_in_qty = m_in_val = m_out_qty = m_out_val = 0.0
+        item_rows = []
+
         for row in movements:
             key = (row.item_code, row.warehouse)
             opening = balance_map.get(key, {"opening_qty": 0.0, "opening_value": 0.0})
 
-            opening_qty = flt(opening["opening_qty"])
-            opening_value = flt(opening["opening_value"])
-            in_qty = flt(row.in_qty)
-            in_value = flt(row.in_value)
-            out_qty = flt(row.out_qty)
-            out_value = flt(row.out_value)
+            o_qty = flt(opening["opening_qty"])
+            o_val = flt(opening["opening_value"])
+            i_qty = flt(row.in_qty)
+            i_val = flt(row.in_value)
+            t_qty = flt(row.out_qty)
+            t_val = flt(row.out_value)
 
-            closing_qty = flt(opening_qty + in_qty - out_qty, 3)
-            closing_value = flt(opening_value + in_value - out_value, 2)
+            c_qty = flt(o_qty + i_qty - t_qty, 3)
+            c_val = flt(o_val + i_val - t_val, 2)
+
+            m_open_qty += o_qty;  m_open_val += o_val
+            m_in_qty   += i_qty;  m_in_val   += i_val
+            m_out_qty  += t_qty;  m_out_val  += t_val
 
             info = item_details.get(row.item_code, {})
-            data.append({
+            item_rows.append({
+                "is_group": 0,
                 "month": label,
                 "item_code": row.item_code,
                 "item_name": info.get("item_name"),
@@ -265,19 +276,32 @@ def get_data_monthly(filters):
                 "brand": info.get("brand"),
                 "stock_uom": info.get("stock_uom"),
                 "warehouse": row.warehouse,
-                "opening_qty": opening_qty,
-                "opening_value": opening_value,
-                "in_qty": in_qty,
-                "in_value": in_value,
-                "out_qty": out_qty,
-                "out_value": out_value,
-                "closing_qty": closing_qty,
-                "closing_value": closing_value,
-                "valuation_rate": flt(closing_value / closing_qty, 2) if closing_qty else 0.0,
+                "opening_qty": o_qty,  "opening_value": o_val,
+                "in_qty":      i_qty,  "in_value":      i_val,
+                "out_qty":     t_qty,  "out_value":      t_val,
+                "closing_qty": c_qty,  "closing_value":  c_val,
+                "valuation_rate": flt(c_val / c_qty, 2) if c_qty else 0.0,
             })
 
-            # Carry closing forward as opening for the next month
-            balance_map[key] = {"opening_qty": closing_qty, "opening_value": closing_value}
+            balance_map[key] = {"opening_qty": c_qty, "opening_value": c_val}
+
+        m_c_qty = flt(m_open_qty + m_in_qty - m_out_qty, 3)
+        m_c_val = flt(m_open_val + m_in_val - m_out_val, 2)
+
+        # ── month group header (is_group=1) ───────────────────────────
+        data.append({
+            "is_group": 1,
+            "month": label,
+            "item_code": None, "item_name": None, "item_group": None,
+            "brand": None, "stock_uom": None, "warehouse": None,
+            "opening_qty": m_open_qty, "opening_value": m_open_val,
+            "in_qty":      m_in_qty,   "in_value":      m_in_val,
+            "out_qty":     m_out_qty,  "out_value":      m_out_val,
+            "closing_qty": m_c_qty,    "closing_value":  m_c_val,
+            "valuation_rate": 0.0,
+        })
+        # ── item rows (is_group=0) follow immediately ─────────────────
+        data.extend(item_rows)
 
     return data
 
@@ -575,32 +599,59 @@ def get_pdf_html(filters, data, columns=None):
             )
 
     # Build table rows
+    # In Monthly mode, is_group=1 rows are month headers, is_group=0 are item rows.
+    # In Summary mode there is no is_group field; all rows are treated as item rows.
     rows_html = ""
-    for idx, row in enumerate(data, 1):
-        row_class = "even" if idx % 2 == 0 else "odd"
-        closing_qty_class = "negative" if flt(row.get("closing_qty")) < 0 else ""
-        month_cell = ('<td>' + str(row.get('month') or '') + '</td>') if is_monthly else ""
+    item_idx = 0  # counter for item rows only (group headers don't get a number)
+    for row in data:
+        if is_monthly and row.get("is_group"):
+            # ── Month group header row ───────────────────────────────
+            # Spans the text columns (#, Month→Rate) then shows numeric totals.
+            month_label = str(row.get("month") or "")
+            rows_html += (
+                '<tr class="month-group-row">'
+                '<td class="text-center" style="color:#718096;">—</td>'
+                '<td colspan="7" class="group-month-cell">'
+                '&#9658;&nbsp;<strong>' + month_label + '</strong>'
+                '</td>'
+                '<td class="text-right"><strong>' + f"{flt(row.get('opening_qty')):,.2f}" + '</strong></td>'
+                '<td class="text-right"><strong>' + fmt_money(row.get('opening_value'), currency=currency) + '</strong></td>'
+                '<td class="text-right qty-in"><strong>' + f"{flt(row.get('in_qty')):,.2f}" + '</strong></td>'
+                '<td class="text-right qty-in"><strong>' + fmt_money(row.get('in_value'), currency=currency) + '</strong></td>'
+                '<td class="text-right qty-out"><strong>' + f"{flt(row.get('out_qty')):,.2f}" + '</strong></td>'
+                '<td class="text-right qty-out"><strong>' + fmt_money(row.get('out_value'), currency=currency) + '</strong></td>'
+                '<td class="text-right"><strong>' + f"{flt(row.get('closing_qty')):,.2f}" + '</strong></td>'
+                '<td class="text-right"><strong>' + fmt_money(row.get('closing_value'), currency=currency) + '</strong></td>'
+                '</tr>'
+            )
+        else:
+            # ── Item row (or Summary-mode row) ───────────────────────
+            item_idx += 1
+            row_class = "even" if item_idx % 2 == 0 else "odd"
+            closing_qty_class = "negative" if flt(row.get("closing_qty")) < 0 else ""
+            # In Monthly mode, emit an empty month cell (group header above shows it)
+            month_cell = "<td></td>" if is_monthly else ""
 
-        rows_html += (
-            '<tr class="' + row_class + '">'
-            '<td class="text-center">' + str(idx) + '</td>'
-            + month_cell +
-            '<td><strong>' + str(row.get('item_code') or '') + '</strong></td>'
-            '<td>' + str(row.get('item_name') or '') + '</td>'
-            '<td class="text-muted">' + str(row.get('item_group') or '') + '</td>'
-            '<td class="text-muted">' + str(row.get('brand') or '') + '</td>'
-            '<td class="text-center">' + str(row.get('stock_uom') or '') + '</td>'
-            '<td class="text-right">' + fmt_money(row.get('valuation_rate'), currency=currency) + '</td>'
-            '<td class="text-right">' + f"{flt(row.get('opening_qty')):,.2f}" + '</td>'
-            '<td class="text-right">' + fmt_money(row.get('opening_value'), currency=currency) + '</td>'
-            '<td class="text-right qty-in">' + f"{flt(row.get('in_qty')):,.2f}" + '</td>'
-            '<td class="text-right qty-in">' + fmt_money(row.get('in_value'), currency=currency) + '</td>'
-            '<td class="text-right qty-out">' + f"{flt(row.get('out_qty')):,.2f}" + '</td>'
-            '<td class="text-right qty-out">' + fmt_money(row.get('out_value'), currency=currency) + '</td>'
-            '<td class="text-right ' + closing_qty_class + '"><strong>' + f"{flt(row.get('closing_qty')):,.2f}" + '</strong></td>'
-            '<td class="text-right"><strong>' + fmt_money(row.get('closing_value'), currency=currency) + '</strong></td>'
-            '</tr>'
-        )
+            rows_html += (
+                '<tr class="' + row_class + '">'
+                '<td class="text-center">' + str(item_idx) + '</td>'
+                + month_cell +
+                '<td><strong>' + str(row.get('item_code') or '') + '</strong></td>'
+                '<td>' + str(row.get('item_name') or '') + '</td>'
+                '<td class="text-muted">' + str(row.get('item_group') or '') + '</td>'
+                '<td class="text-muted">' + str(row.get('brand') or '') + '</td>'
+                '<td class="text-center">' + str(row.get('stock_uom') or '') + '</td>'
+                '<td class="text-right">' + fmt_money(row.get('valuation_rate'), currency=currency) + '</td>'
+                '<td class="text-right">' + f"{flt(row.get('opening_qty')):,.2f}" + '</td>'
+                '<td class="text-right">' + fmt_money(row.get('opening_value'), currency=currency) + '</td>'
+                '<td class="text-right qty-in">' + f"{flt(row.get('in_qty')):,.2f}" + '</td>'
+                '<td class="text-right qty-in">' + fmt_money(row.get('in_value'), currency=currency) + '</td>'
+                '<td class="text-right qty-out">' + f"{flt(row.get('out_qty')):,.2f}" + '</td>'
+                '<td class="text-right qty-out">' + fmt_money(row.get('out_value'), currency=currency) + '</td>'
+                '<td class="text-right ' + closing_qty_class + '"><strong>' + f"{flt(row.get('closing_qty')):,.2f}" + '</strong></td>'
+                '<td class="text-right"><strong>' + fmt_money(row.get('closing_value'), currency=currency) + '</strong></td>'
+                '</tr>'
+            )
 
     # Build totals row — colspan includes the Month column when in Monthly mode
     totals_html = (
@@ -672,6 +723,10 @@ def get_pdf_html(filters, data, columns=None):
         tr.totals-row { background: #edf2f7 !important; font-weight: 700;
                        border-top: 2px solid #2d3748; }
         tr.totals-row td { padding: 10px 6px; border-color: #2d3748; font-size: 9pt; }
+        tr.month-group-row { background: linear-gradient(135deg,#ebf4ff,#dbeafe) !important;
+                            border-left: 4px solid #4299e1; }
+        tr.month-group-row td { padding: 8px 6px; border-color: #bfdbfe; }
+        td.group-month-cell { font-size: 9pt; color: #1e40af; padding-left: 10px !important; }
         .footer { margin-top: 20px; padding-top: 10px; border-top: 1px solid #e2e8f0;
                  display: flex; justify-content: space-between; font-size: 7.5pt; color: #718096; }
         .signature-section { display: grid; grid-template-columns: repeat(3, 1fr);
