@@ -200,6 +200,15 @@ def build_conditions(filters):
         conditions += " AND si.territory = %(territory)s "
         params["territory"] = filters.get("territory")
 
+    # Online vs Offline sales — custom_online_sale is a Yes/No select on the
+    # Sales Invoice (Yes = online). Offline = anything not explicitly 'Yes',
+    # so Online + Offline together always cover every invoice.
+    sale_type = filters.get("sale_type")
+    if sale_type == "Online":
+        conditions += " AND si.custom_online_sale = 'Yes' "
+    elif sale_type == "Offline":
+        conditions += " AND COALESCE(si.custom_online_sale, '') <> 'Yes' "
+
     if filters.get("item_code"):
         conditions += " AND sii.item_code = %(item_code)s "
         params["item_code"] = filters.get("item_code")
@@ -272,6 +281,15 @@ def build_conditions_no_st(filters):
     if filters.get("territory"):
         conditions += " AND si.territory = %(territory)s "
         params["territory"] = filters.get("territory")
+
+    # Online vs Offline sales — custom_online_sale is a Yes/No select on the
+    # Sales Invoice (Yes = online). Offline = anything not explicitly 'Yes',
+    # so Online + Offline together always cover every invoice.
+    sale_type = filters.get("sale_type")
+    if sale_type == "Online":
+        conditions += " AND si.custom_online_sale = 'Yes' "
+    elif sale_type == "Offline":
+        conditions += " AND COALESCE(si.custom_online_sale, '') <> 'Yes' "
 
     if filters.get("item_code"):
         conditions += " AND sii.item_code = %(item_code)s "
@@ -725,6 +743,7 @@ def get_pdf_html(filters, data=None, columns=None):
         ("Item", filters.get("item_code") or "All"),
         ("Item Group", filters.get("item_group") or "All"),
         ("Brand", filters.get("brand") or "All"),
+        ("Sale Type", filters.get("sale_type") or "All"),
         ("Payment Status", ", ".join(payment_status_list) or "All"),
         ("Payment Terms Template", filters.get("payment_terms_template") or "All"),
         ("Payment Term", filters.get("payment_term") or "All"),

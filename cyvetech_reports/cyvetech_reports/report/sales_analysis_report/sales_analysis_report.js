@@ -54,6 +54,12 @@ frappe.query_reports["Sales Analysis Report"] = {
             options: "Territory"
         },
         {
+            fieldname: "sale_type",
+            label: __("Sale Type"),
+            fieldtype: "Select",
+            options: "\nOnline\nOffline"
+        },
+        {
             fieldname: "item_code",
             label: __("Item"),
             fieldtype: "Link",
