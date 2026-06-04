@@ -377,27 +377,33 @@ def build_pdf_table(data, extra, currency):
     def fmt(v):
         return fmt_money(flt(v), currency=currency) if flt(v) else "-"
 
-    # Total column count for group row colspan
-    col_count = 2  # always: # + Item Name
-    if show_price: col_count += 1
-    if show_stock: col_count += 1
-    if show_brand: col_count += 1
-    if show_desc:  col_count += 1
+    # Column widths as relative weights, normalised to 100% so the table
+    # always spans exactly the usable A4 width (with table-layout:fixed) no
+    # matter which optional columns are shown — nothing overflows the page.
+    weights = [("idx", 0.5), ("name", 4.0)]
+    if show_price: weights.append(("price", 1.6))
+    if show_stock: weights.append(("qty",   1.4))
+    if show_brand: weights.append(("brand", 1.6))
+    if show_desc:  weights.append(("desc",  3.5))
+
+    total_w   = sum(w for _, w in weights)
+    pct       = {k: round(w / total_w * 100, 2) for k, w in weights}
+    col_count = len(weights)  # for the group-row colspan
 
     # Header
     headers = (
         '<tr>'
-        '<th class="text-center" style="width:35px;">#</th>'
-        '<th style="min-width:280px;">Item Group / Item Name</th>'
+        '<th class="text-center" style="width:' + str(pct["idx"]) + '%;">#</th>'
+        '<th style="width:' + str(pct["name"]) + '%;">Item Group / Item Name</th>'
     )
     if show_price:
-        headers += '<th class="text-right" style="width:130px;">Selling Price</th>'
+        headers += '<th class="text-right" style="width:' + str(pct["price"]) + '%;">Selling Price</th>'
     if show_stock:
-        headers += '<th class="text-right" style="width:110px;">Qty on Hand</th>'
+        headers += '<th class="text-right" style="width:' + str(pct["qty"]) + '%;">Qty on Hand</th>'
     if show_brand:
-        headers += '<th style="width:130px;">Brand</th>'
+        headers += '<th style="width:' + str(pct["brand"]) + '%;">Brand</th>'
     if show_desc:
-        headers += '<th>Description</th>'
+        headers += '<th style="width:' + str(pct["desc"]) + '%;">Description</th>'
     headers += '</tr>'
 
     rows_html  = ""
@@ -501,13 +507,16 @@ def get_pdf_css():
         ".filter-item { font-size:7.5pt; }"
         ".filter-label { font-weight:600; color:#4a5568; }"
 
-        "table.report-table { width:100%; border-collapse:collapse;"
-        "    font-size:7pt; margin-bottom:10px; }"
+        "table.report-table { width:100%; max-width:100%; border-collapse:collapse;"
+        "    font-size:7pt; margin-bottom:10px; table-layout:fixed; }"
         "table.report-table thead {"
         "    background:linear-gradient(135deg,#4299e1 0%,#667eea 100%); color:white; }"
         "table.report-table th { padding:6px 5px; font-weight:600; font-size:6.8pt;"
-        "    text-transform:uppercase; letter-spacing:0.2px; border:1px solid #5a92d4; }"
-        "table.report-table td { padding:4px 5px; border:1px solid #e2e8f0; }"
+        "    text-transform:uppercase; letter-spacing:0.2px; border:1px solid #5a92d4;"
+        "    word-wrap:break-word; overflow-wrap:break-word; }"
+        "table.report-table td { padding:4px 5px; border:1px solid #e2e8f0;"
+        "    vertical-align:top; word-wrap:break-word; overflow-wrap:break-word;"
+        "    word-break:break-word; }"
         "table.report-table tr.odd  { background:#ffffff; }"
         "table.report-table tr.even { background:#f7fafc; }"
         ".text-right  { text-align:right  !important; }"
