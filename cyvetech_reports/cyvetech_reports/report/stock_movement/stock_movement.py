@@ -556,8 +556,14 @@ def get_pdf_html(filters, data, columns=None):
     if isinstance(data, str):
         data = json.loads(data)
 
-    # Filter out auto-added "Total" row from Script Report (add_total_row)
-    data = [d for d in data if d.get("item_code") and d.get("item_code") != "Total"]
+    is_monthly = (filters.get("group_by") or "Summary") == "Monthly"
+
+    # Remove Frappe's auto-added "Total" sentinel row.
+    # In Monthly mode keep group rows (item_code=None) — they are the month headers.
+    if is_monthly:
+        data = [d for d in data if str(d.get("item_code") or "") != "Total"]
+    else:
+        data = [d for d in data if d.get("item_code") and d.get("item_code") != "Total"]
 
     company = filters.get("company")
     company_doc = frappe.get_doc("Company", company) if company else None
@@ -565,17 +571,24 @@ def get_pdf_html(filters, data, columns=None):
 
     letter_head_html = _company_header_html(company_doc)
 
-    # Compute totals
-    total_opening_qty = sum(flt(d.get("opening_qty")) for d in data)
-    total_opening_value = sum(flt(d.get("opening_value")) for d in data)
-    total_in_qty = sum(flt(d.get("in_qty")) for d in data)
-    total_in_value = sum(flt(d.get("in_value")) for d in data)
-    total_out_qty = sum(flt(d.get("out_qty")) for d in data)
-    total_out_value = sum(flt(d.get("out_value")) for d in data)
-    total_closing_qty = sum(flt(d.get("closing_qty")) for d in data)
-    total_closing_value = sum(flt(d.get("closing_value")) for d in data)
+    # ── Summary card totals ──────────────────────────────────────────────────
+    # In Monthly mode the client sends only the currently visible rows (collapsed
+    # months = group row only; expanded = group + item rows).  To guarantee the
+    # summary cards always show the full-period figures we re-run the Summary
+    # query server-side and aggregate from that, independent of what is expanded.
+    if is_monthly:
+        _summary = get_data({**filters, "group_by": "Summary"})
+    else:
+        _summary = data
 
-    is_monthly = (filters.get("group_by") or "Summary") == "Monthly"
+    total_opening_qty   = sum(flt(d.get("opening_qty"))   for d in _summary)
+    total_opening_value = sum(flt(d.get("opening_value")) for d in _summary)
+    total_in_qty        = sum(flt(d.get("in_qty"))        for d in _summary)
+    total_in_value      = sum(flt(d.get("in_value"))      for d in _summary)
+    total_out_qty       = sum(flt(d.get("out_qty"))       for d in _summary)
+    total_out_value     = sum(flt(d.get("out_value"))     for d in _summary)
+    total_closing_qty   = sum(flt(d.get("closing_qty"))   for d in _summary)
+    total_closing_value = sum(flt(d.get("closing_value")) for d in _summary)
 
     # Build filter summary
     filter_html = ""
