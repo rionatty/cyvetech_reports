@@ -6,14 +6,19 @@ row already carries ``customer_name`` via set_party_details. This patch
 inserts the missing column definition into the report output, so the name is
 visible regardless of the naming setting and without touching erpnext core.
 
-The patch is applied lazily via the ``before_request`` / ``before_job`` hooks
-(standard Frappe monkey-patch pattern) and wraps
-``frappe.desk.query_report._run`` so the desk view, prepared reports and
-XLSX/CSV exports are all covered.
+The patch wraps the public ``frappe.desk.query_report.run`` (present in all
+Frappe versions) and is applied lazily via the ``before_request`` /
+``before_job`` hooks, so the desk view, prepared reports and XLSX/CSV exports
+are all covered.
+
+To check the state on a server:
+    bench --site <site> execute cyvetech_reports.overrides.accounts_receivable.verify
 """
 
 import frappe
 from frappe import _
+
+TARGET_REPORTS = ("Accounts Receivable",)
 
 _patched = False
 _original_run = None
@@ -25,20 +30,20 @@ def apply_patch():
 		return
 	_patched = True
 
-	import frappe.desk.query_report as query_report
+	try:
+		import frappe.desk.query_report as query_report
 
-	# _run exists on Frappe v16+; on older versions do nothing
-	if not hasattr(query_report, "_run"):
-		return
-
-	_original_run = query_report._run
-	query_report._run = _run_with_customer_name
+		_original_run = query_report.run
+		query_report.run = _patched_run
+	except Exception:
+		frappe.log_error(title="Cyvetech Reports: failed to patch query_report.run")
 
 
-def _run_with_customer_name(*args, **kwargs):
-	result = _original_run(*args, **kwargs)
+@frappe.whitelist()
+def _patched_run(report_name=None, *args, **kwargs):
+	result = _original_run(report_name, *args, **kwargs)
 
-	if kwargs.get("report_name") == "Accounts Receivable":
+	if report_name in TARGET_REPORTS:
 		try:
 			_insert_customer_name_column(result)
 		except Exception:
@@ -76,3 +81,31 @@ def _insert_customer_name_column(result):
 			"sticky": True,
 		},
 	)
+
+
+def verify():
+	"""End-to-end server-side check. Run:
+	bench --site <site> execute cyvetech_reports.overrides.accounts_receivable.verify
+	"""
+	import frappe.desk.query_report as query_report
+
+	hook_path = "cyvetech_reports.overrides.accounts_receivable.apply_patch"
+	hooks_registered = hook_path in (frappe.get_hooks("before_request") or [])
+
+	apply_patch()
+
+	result = query_report.run(
+		"Accounts Receivable",
+		filters={"report_date": frappe.utils.nowdate(), "range": "30, 60, 90, 120"},
+		ignore_prepared_report=True,
+	)
+	columns = [c.get("fieldname") for c in (result.get("columns") or [])]
+
+	out = {
+		"before_request_hook_registered": hooks_registered,
+		"query_report_run_patched": getattr(query_report.run, "__module__", "") == __name__,
+		"customer_name_in_columns": "customer_name" in columns,
+		"columns": columns[:8],
+	}
+	print(out)
+	return out

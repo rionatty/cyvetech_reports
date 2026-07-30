@@ -14,7 +14,7 @@ Custom Frappe/ERPNext reports by Cyvetech.
 
 ## Customizations
 
-- **Accounts Receivable — Customer Name column** — Shows the Customer Name column on the standard ERPNext Accounts Receivable report, regardless of the *Customer Naming By* setting (Frappe v16+)
+- **Accounts Receivable — Customer Name column** — Shows the Customer Name column on the standard ERPNext Accounts Receivable report, regardless of the *Customer Naming By* setting
 
 ## Installation
 
