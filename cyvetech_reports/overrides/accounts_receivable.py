@@ -231,10 +231,10 @@ def verify():
 	names = [(r.get("customer_name") or r.get("party") or "").lower() for r in rows]
 
 	def js_is_current(path):
-		# "Print Fields" only exists in the latest ar_extensions.js
+		# "Summarize by Customer" only exists in the latest ar_extensions.js
 		try:
 			with open(path, encoding="utf-8") as f:
-				return "Print Fields" in f.read()
+				return "Summarize by Customer" in f.read()
 		except OSError:
 			return None  # file missing / unreadable
 
