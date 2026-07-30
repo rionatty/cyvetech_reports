@@ -230,10 +230,29 @@ def verify():
 	rows = [r for r in (result.get("result") or []) if isinstance(r, dict) and r.get("party")]
 	names = [(r.get("customer_name") or r.get("party") or "").lower() for r in rows]
 
+	def js_is_current(path):
+		# "Print Fields" only exists in the latest ar_extensions.js
+		try:
+			with open(path, encoding="utf-8") as f:
+				return "Print Fields" in f.read()
+		except OSError:
+			return None  # file missing / unreadable
+
+	import os
+
+	app_js = frappe.get_app_path("cyvetech_reports", "public", "js", "ar_extensions.js")
+	served_js = os.path.join(
+		frappe.utils.get_bench_path(), "sites", "assets", "cyvetech_reports", "js", "ar_extensions.js"
+	)
+
 	out = {
 		"before_request_hook_registered": hooks_registered,
-		"app_include_js_registered": "/assets/cyvetech_reports/js/ar_extensions.js"
-		in (frappe.get_hooks("app_include_js") or []),
+		"app_include_js_registered": any(
+			"/assets/cyvetech_reports/js/ar_extensions.js" in hook
+			for hook in (frappe.get_hooks("app_include_js") or [])
+		),
+		"app_source_js_current": js_is_current(app_js),
+		"served_assets_js_current": js_is_current(served_js),
 		"query_report_run_patched": getattr(query_report.run, "__module__", "") == __name__,
 		"customer_name_in_columns": "customer_name" in columns,
 		"mode_of_payment_in_columns": "mode_of_payment" in columns,

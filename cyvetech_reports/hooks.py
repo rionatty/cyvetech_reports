@@ -10,8 +10,10 @@ app_license = "MIT"
 before_request = ["cyvetech_reports.overrides.accounts_receivable.apply_patch"]
 before_job = ["cyvetech_reports.overrides.accounts_receivable.apply_patch"]
 
-# Accounts Receivable report enhancements — desk UI (Print button, filters)
-app_include_js = "/assets/cyvetech_reports/js/ar_extensions.js"
+# Accounts Receivable report enhancements — desk UI (Print button, filters).
+# Bump the ?v= query on every change to ar_extensions.js — it busts browser
+# and proxy/CDN caches, which key on the full URL.
+app_include_js = "/assets/cyvetech_reports/js/ar_extensions.js?v=2"
 
 fixtures = [
     {
