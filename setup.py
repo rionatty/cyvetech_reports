@@ -3,7 +3,7 @@ from setuptools import setup, find_packages
 setup(
     name="cyvetech_reports",
     version="0.0.1",
-    description="Custom reports for Pharma Mart Limited",
+    description="Custom Frappe/ERPNext reports by Cyvetech",
     author="Cyvetech",
     author_email="support@cyvetech.com",
     packages=find_packages(),

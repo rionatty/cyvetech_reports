@@ -1,6 +1,6 @@
 # Cyvetech Reports
 
-Custom Frappe/ERPNext reports for Pharma Mart Limited.
+Custom Frappe/ERPNext reports by Cyvetech.
 
 **Repository:** https://github.com/rionatty/cyvetech_reports.git
 
@@ -21,10 +21,10 @@ cd ~/frappe-bench
 
 bench get-app cyvetech_reports https://github.com/rionatty/cyvetech_reports.git
 
-bench --site pharmamart.local install-app cyvetech_reports
+bench --site your-site install-app cyvetech_reports
 
-bench --site pharmamart.local migrate
-bench --site pharmamart.local clear-cache
+bench --site your-site migrate
+bench --site your-site clear-cache
 bench restart
 ```
 
@@ -35,7 +35,7 @@ cd ~/frappe-bench/apps/cyvetech_reports
 git pull origin main
 
 cd ~/frappe-bench
-bench --site pharmamart.local migrate
-bench --site pharmamart.local clear-cache
+bench --site your-site migrate
+bench --site your-site clear-cache
 bench restart
 ```
