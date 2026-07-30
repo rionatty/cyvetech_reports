@@ -45,8 +45,18 @@
 		const original_onload = settings.onload;
 		settings.onload = function (report) {
 			if (original_onload) original_onload.call(this, report);
-			report.page.add_inner_button(__("Print"), () => print_with_saved_fields(report));
-			report.page.add_menu_item(__("Select Print Fields"), () => select_fields_and_print(report));
+			const $print = report.page.add_inner_button(__("Print"), () =>
+				print_with_saved_fields(report)
+			);
+			if ($print && $print.css) {
+				$print.css({
+					"background-color": "#16a34a",
+					"border-color": "#16a34a",
+					color: "#fff",
+					"font-weight": "600",
+				});
+			}
+			report.page.add_inner_button(__("Print Fields"), () => select_fields_and_print(report));
 		};
 		return settings;
 	}

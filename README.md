@@ -19,7 +19,7 @@ Custom Frappe/ERPNext reports by Cyvetech.
   - Mode of Payment and Paid To (bank/cash account name, without account code) columns for Payment Entry rows
   - Rows sorted by customer name A–Z on load
   - *Remove Customer Negative Balance* checkbox filter to hide negative-outstanding rows
-  - Print toolbar button with field selection; the selected fields are remembered per user, so subsequent prints are one click (change them via menu > *Select Print Fields*)
+  - Green **Print** toolbar button with field selection; the selected fields are remembered per user, so subsequent prints are one click. The **Print Fields** button next to it changes the selection any time
 
 ## Installation
 
