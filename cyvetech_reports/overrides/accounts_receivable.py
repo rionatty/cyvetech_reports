@@ -1,22 +1,30 @@
-"""Show the Customer Name column on the standard Accounts Receivable report.
+"""Enhancements for the standard Accounts Receivable report.
 
-ERPNext only adds this column when Selling Settings > Customer Naming By is
-"Naming Series" (ReceivablePayableReport.get_columns), even though every data
-row already carries ``customer_name`` via set_party_details. This patch
-inserts the missing column definition into the report output, so the name is
-visible regardless of the naming setting and without touching erpnext core.
+Applied by wrapping the public ``frappe.desk.query_report.run`` (present in
+all Frappe versions) via the ``before_request`` / ``before_job`` hooks, so the
+desk view, prepared reports and XLSX/CSV exports are all covered — without
+touching erpnext core.
 
-The patch wraps the public ``frappe.desk.query_report.run`` (present in all
-Frappe versions) and is applied lazily via the ``before_request`` /
-``before_job`` hooks, so the desk view, prepared reports and XLSX/CSV exports
-are all covered.
+Enhancements:
+- Customer Name column: ERPNext only adds it when Selling Settings > Customer
+  Naming By is "Naming Series", even though every row already carries
+  ``customer_name`` via set_party_details. The missing column definition is
+  inserted so the name shows regardless of the naming setting.
+- Mode of Payment / Paid To columns: for Payment Entry rows, shows how the
+  payment was made and the bank/cash account name (without the account code).
+- Remove Customer Negative Balance: optional checkbox filter (added client
+  side in ar_extensions.js) that hides rows with a negative outstanding.
+- Rows are sorted by customer name A-Z on load (unless grouped by customer).
 
 To check the state on a server:
     bench --site <site> execute cyvetech_reports.overrides.accounts_receivable.verify
 """
 
+import json
+
 import frappe
 from frappe import _
+from frappe.utils import flt
 
 TARGET_REPORTS = ("Accounts Receivable",)
 
@@ -45,19 +53,41 @@ def _patched_run(report_name=None, *args, **kwargs):
 
 	if report_name in TARGET_REPORTS:
 		try:
+			filters = _parse_filters(kwargs.get("filters", args[0] if args else None))
+			_add_payment_mode_columns(result)
 			_insert_customer_name_column(result)
+			_remove_negative_rows(result, filters)
+			_sort_rows_by_customer(result, filters)
 		except Exception:
-			frappe.log_error(title="Cyvetech Reports: AR Customer Name column failed")
+			frappe.log_error(title="Cyvetech Reports: AR report enhancements failed")
 
 	return result
 
 
-def _insert_customer_name_column(result):
-	if not isinstance(result, dict):
-		return
+def _parse_filters(filters):
+	if isinstance(filters, str):
+		try:
+			filters = json.loads(filters)
+		except ValueError:
+			filters = None
+	return filters if isinstance(filters, dict) else {}
 
+
+def _get_columns_and_rows(result):
+	if not isinstance(result, dict):
+		return [], []
 	columns = result.get("columns") or []
-	fieldnames = [c.get("fieldname") for c in columns if isinstance(c, dict)]
+	rows = [r for r in (result.get("result") or []) if isinstance(r, dict)]
+	return columns, rows
+
+
+def _fieldnames(columns):
+	return [c.get("fieldname") for c in columns if isinstance(c, dict)]
+
+
+def _insert_customer_name_column(result):
+	columns, rows = _get_columns_and_rows(result)
+	fieldnames = _fieldnames(columns)
 
 	# nothing to do, or core already added it (Customer Naming By = Naming Series)
 	if not fieldnames or "customer_name" in fieldnames:
@@ -83,6 +113,80 @@ def _insert_customer_name_column(result):
 	)
 
 
+def _add_payment_mode_columns(result):
+	columns, rows = _get_columns_and_rows(result)
+	fieldnames = _fieldnames(columns)
+
+	if not fieldnames or "voucher_no" not in fieldnames or "mode_of_payment" in fieldnames:
+		return
+
+	idx = fieldnames.index("voucher_no") + 1
+	columns[idx:idx] = [
+		{
+			"label": _("Mode of Payment"),
+			"fieldname": "mode_of_payment",
+			"fieldtype": "Data",
+			"width": 130,
+		},
+		{
+			"label": _("Paid To"),
+			"fieldname": "paid_to_account",
+			"fieldtype": "Data",
+			"width": 150,
+		},
+	]
+
+	payment_entries = list(
+		{r.get("voucher_no") for r in rows if r.get("voucher_type") == "Payment Entry" and r.get("voucher_no")}
+	)
+	if not payment_entries:
+		return
+
+	details = frappe.get_all(
+		"Payment Entry",
+		filters={"name": ("in", payment_entries)},
+		fields=["name", "mode_of_payment", "paid_to"],
+	)
+	account_names = {
+		a.name: a.account_name
+		for a in frappe.get_all(
+			"Account",
+			filters={"name": ("in", list({d.paid_to for d in details if d.paid_to}))},
+			fields=["name", "account_name"],
+		)
+	}
+	details_map = {d.name: d for d in details}
+
+	for row in rows:
+		detail = row.get("voucher_type") == "Payment Entry" and details_map.get(row.get("voucher_no"))
+		if detail:
+			row["mode_of_payment"] = detail.mode_of_payment
+			row["paid_to_account"] = account_names.get(detail.paid_to)
+
+
+def _remove_negative_rows(result, filters):
+	if not filters.get("remove_negative_balance") or not isinstance(result, dict):
+		return
+
+	result["result"] = [
+		r
+		for r in (result.get("result") or [])
+		if not (isinstance(r, dict) and r.get("outstanding") is not None and flt(r.get("outstanding")) < 0)
+	]
+
+
+def _sort_rows_by_customer(result, filters):
+	# grouped output has subtotal structure that must not be reordered
+	if filters.get("group_by_party") or not isinstance(result, dict):
+		return
+
+	rows = result.get("result") or []
+	if len(rows) < 2 or not all(isinstance(r, dict) for r in rows):
+		return
+
+	rows.sort(key=lambda r: (r.get("customer_name") or r.get("party") or "").lower())
+
+
 def verify():
 	"""End-to-end server-side check. Run:
 	bench --site <site> execute cyvetech_reports.overrides.accounts_receivable.verify
@@ -105,7 +209,8 @@ def verify():
 		"before_request_hook_registered": hooks_registered,
 		"query_report_run_patched": getattr(query_report.run, "__module__", "") == __name__,
 		"customer_name_in_columns": "customer_name" in columns,
-		"columns": columns[:8],
+		"mode_of_payment_in_columns": "mode_of_payment" in columns,
+		"columns": columns[:12],
 	}
 	print(out)
 	return out

@@ -14,7 +14,12 @@ Custom Frappe/ERPNext reports by Cyvetech.
 
 ## Customizations
 
-- **Accounts Receivable — Customer Name column** — Shows the Customer Name column on the standard ERPNext Accounts Receivable report, regardless of the *Customer Naming By* setting
+- **Accounts Receivable enhancements** — extends the standard ERPNext Accounts Receivable report:
+  - Customer Name column, regardless of the *Customer Naming By* setting
+  - Mode of Payment and Paid To (bank/cash account name, without account code) columns for Payment Entry rows
+  - Rows sorted by customer name A–Z on load
+  - *Remove Customer Negative Balance* checkbox filter to hide negative-outstanding rows
+  - Print toolbar button with field selection; the selected fields are remembered per user, so subsequent prints are one click (change them via menu > *Select Print Fields*)
 
 ## Installation
 
