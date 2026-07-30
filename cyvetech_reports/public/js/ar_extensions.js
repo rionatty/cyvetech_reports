@@ -8,9 +8,14 @@
  * - "Remove Customer Negative Balance" checkbox filter (rows are filtered
  *   server side, see overrides/accounts_receivable.py).
  *
+ * - "Summarize by Customer" checkbox filter: collapses the on-screen report
+ *   to one row per customer (aggregated server side).
+ *
  * The report settings object is registered lazily by core when the report
  * page loads, so we intercept the registration with a property setter
  * instead of assuming load order.
+ *
+ * cyvetech-ar-ext v4
  */
 (function () {
 	const REPORT_NAME = "Accounts Receivable";
@@ -37,11 +42,18 @@
 		if (!settings || settings.__cyvetech_extended) return settings;
 		settings.__cyvetech_extended = true;
 
-		(settings.filters = settings.filters || []).push({
-			fieldname: "remove_negative_balance",
-			label: __("Remove Customer Negative Balance"),
-			fieldtype: "Check",
-		});
+		(settings.filters = settings.filters || []).push(
+			{
+				fieldname: "remove_negative_balance",
+				label: __("Remove Customer Negative Balance"),
+				fieldtype: "Check",
+			},
+			{
+				fieldname: "summarize_by_customer",
+				label: __("Summarize by Customer"),
+				fieldtype: "Check",
+			}
+		);
 
 		const original_onload = settings.onload;
 		settings.onload = function (report) {

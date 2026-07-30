@@ -20,7 +20,7 @@ Custom Frappe/ERPNext reports by Cyvetech.
   - Rows sorted by customer name A–Z on load
   - *Remove Customer Negative Balance* checkbox filter to hide negative-outstanding rows
   - Green **Print** toolbar button with field selection; the selected fields are remembered per user, so subsequent prints are one click. The **Print Fields** button next to it changes the selection any time
-  - **Summarize by Customer** option in the print dialog — prints one row per customer with summed amounts and a grand total (remembered along with the field selection)
+  - **Summarize by Customer** checkbox filter — collapses the report (on screen, in print, and in exports) to one row per customer with summed amounts; also available as a print-only option in the print dialog (remembered along with the field selection)
 
 ## Installation
 

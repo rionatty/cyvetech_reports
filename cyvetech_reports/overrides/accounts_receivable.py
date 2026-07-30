@@ -14,6 +14,9 @@ Enhancements:
   payment was made and the bank/cash account name (without the account code).
 - Remove Customer Negative Balance: optional checkbox filter (added client
   side in ar_extensions.js) that hides rows with a negative outstanding.
+- Summarize by Customer: optional checkbox filter (added client side) that
+  collapses the report to one row per customer — numeric columns summed,
+  per-voucher values blanked when they differ.
 - Rows are sorted by customer name A-Z on load (unless grouped by customer).
 
 To check the state on a server:
@@ -58,6 +61,7 @@ def _patched_run(report_name=None, *args, **kwargs):
 			_insert_customer_name_column(result)
 			_remove_negative_rows(result, filters)
 			_sort_rows_by_customer(result, filters)
+			_summarize_by_customer(result, filters)
 		except Exception:
 			frappe.log_error(title="Cyvetech Reports: AR report enhancements failed")
 
@@ -209,6 +213,62 @@ def _sort_rows_by_customer(result, filters):
 	result["result"] = sortable + others
 
 
+def _summarize_by_customer(result, filters):
+	# one row per customer: numeric columns summed, non-numeric kept only when
+	# identical across the customer's rows. Grouped output is left alone.
+	if not filters.get("summarize_by_customer") or filters.get("group_by_party"):
+		return
+	if not isinstance(result, dict):
+		return
+
+	columns = result.get("columns") or []
+	rows = result.get("result") or []
+	if not columns or not rows:
+		return
+
+	has_total_row = bool(result.get("add_total_row")) and isinstance(rows[-1], (list, tuple))
+	if has_total_row:
+		rows = rows[:-1]
+
+	numeric = {"Currency", "Float", "Int"}
+	col_defs = [c for c in columns if isinstance(c, dict) and c.get("fieldname")]
+	# age is per-voucher; summing it would be meaningless
+	sum_fields = [
+		c["fieldname"] for c in col_defs if c.get("fieldtype") in numeric and c["fieldname"] != "age"
+	]
+	other_fields = [c["fieldname"] for c in col_defs if c["fieldname"] not in sum_fields]
+
+	groups = {}
+	order = []
+	for r in rows:
+		if isinstance(r, dict) and r.get("party"):
+			if r["party"] not in groups:
+				groups[r["party"]] = []
+				order.append(r["party"])
+			groups[r["party"]].append(r)
+
+	if not groups:
+		return
+
+	out = []
+	for party in order:
+		group = groups[party]
+		agg = {"currency": group[0].get("currency")}
+		for f in other_fields:
+			values = {g.get(f) if g.get(f) is not None else "" for g in group}
+			agg[f] = values.pop() if len(values) == 1 else None
+		for f in sum_fields:
+			agg[f] = sum(flt(g.get(f)) for g in group)
+		out.append(agg)
+
+	if has_total_row:
+		import frappe.desk.query_report as query_report
+
+		out = query_report.add_total_row(out, columns)
+
+	result["result"] = out
+
+
 def verify():
 	"""End-to-end server-side check. Run:
 	bench --site <site> execute cyvetech_reports.overrides.accounts_receivable.verify
@@ -231,10 +291,10 @@ def verify():
 	names = [(r.get("customer_name") or r.get("party") or "").lower() for r in rows]
 
 	def js_is_current(path):
-		# "Summarize by Customer" only exists in the latest ar_extensions.js
+		# version tag comment bumped on every ar_extensions.js change
 		try:
 			with open(path, encoding="utf-8") as f:
-				return "Summarize by Customer" in f.read()
+				return "cyvetech-ar-ext v4" in f.read()
 		except OSError:
 			return None  # file missing / unreadable
 
