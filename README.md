@@ -12,6 +12,10 @@ Custom Frappe/ERPNext reports by Cyvetech.
 - **Item List Report** — Item catalogue report
 - **General Ledger Print** — Custom general ledger print format
 
+## Customizations
+
+- **Accounts Receivable — Customer Name column** — Shows the Customer Name column on the standard ERPNext Accounts Receivable report, regardless of the *Customer Naming By* setting (Frappe v16+)
+
 ## Installation
 
 ### Fresh Install
