@@ -168,11 +168,28 @@ def _remove_negative_rows(result, filters):
 	if not filters.get("remove_negative_balance") or not isinstance(result, dict):
 		return
 
-	result["result"] = [
+	rows = result.get("result") or []
+	if not rows:
+		return
+
+	# the server-appended grand total (a plain list as the last row) must be
+	# recomputed after filtering, or it would still include the removed rows
+	has_total_row = bool(result.get("add_total_row")) and isinstance(rows[-1], (list, tuple))
+	if has_total_row:
+		rows = rows[:-1]
+
+	rows = [
 		r
-		for r in (result.get("result") or [])
+		for r in rows
 		if not (isinstance(r, dict) and r.get("outstanding") is not None and flt(r.get("outstanding")) < 0)
 	]
+
+	if has_total_row and rows:
+		import frappe.desk.query_report as query_report
+
+		rows = query_report.add_total_row(rows, result.get("columns") or [])
+
+	result["result"] = rows
 
 
 def _sort_rows_by_customer(result, filters):
@@ -181,10 +198,15 @@ def _sort_rows_by_customer(result, filters):
 		return
 
 	rows = result.get("result") or []
-	if len(rows) < 2 or not all(isinstance(r, dict) for r in rows):
+	# sort only the data rows; keep everything else (e.g. the grand total,
+	# which frappe appends as a plain list) after them in original order
+	sortable = [r for r in rows if isinstance(r, dict) and r.get("party")]
+	others = [r for r in rows if not (isinstance(r, dict) and r.get("party"))]
+	if len(sortable) < 2:
 		return
 
-	rows.sort(key=lambda r: (r.get("customer_name") or r.get("party") or "").lower())
+	sortable.sort(key=lambda r: (r.get("customer_name") or r.get("party") or "").lower())
+	result["result"] = sortable + others
 
 
 def verify():
@@ -205,11 +227,17 @@ def verify():
 	)
 	columns = [c.get("fieldname") for c in (result.get("columns") or [])]
 
+	rows = [r for r in (result.get("result") or []) if isinstance(r, dict) and r.get("party")]
+	names = [(r.get("customer_name") or r.get("party") or "").lower() for r in rows]
+
 	out = {
 		"before_request_hook_registered": hooks_registered,
+		"app_include_js_registered": "/assets/cyvetech_reports/js/ar_extensions.js"
+		in (frappe.get_hooks("app_include_js") or []),
 		"query_report_run_patched": getattr(query_report.run, "__module__", "") == __name__,
 		"customer_name_in_columns": "customer_name" in columns,
 		"mode_of_payment_in_columns": "mode_of_payment" in columns,
+		"rows_sorted_a_to_z": names == sorted(names),
 		"columns": columns[:12],
 	}
 	print(out)
