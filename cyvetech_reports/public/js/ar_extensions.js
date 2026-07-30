@@ -1,65 +1,72 @@
 /* Cyvetech Reports — Accounts Receivable desk extensions.
  *
- * - Print toolbar button: prints the report with a user-selected set of
- *   fields, optionally summarized to one row per customer (numeric columns
- *   summed + grand total). Selection and summarize choice are remembered
- *   (per user, in this browser), so the next print is a single click.
- *   Change them any time via the "Print Fields" button.
- * - "Remove Customer Negative Balance" checkbox filter (rows are filtered
- *   server side, see overrides/accounts_receivable.py).
+ * Applies to both "Accounts Receivable" and "Accounts Receivable Summary":
+ * - Green Print toolbar button producing the branded Cyvetech printout
+ *   (rendered server side, see overrides/ar_print.py) with a user-selected
+ *   set of fields, remembered per user and per report. The "Print Fields"
+ *   button changes the selection any time.
+ * - "Remove Customer Negative Balance" checkbox filter (server side).
+ * - "Summarize by Customer" checkbox filter (detail report only — the
+ *   Summary report is already one row per customer).
  *
- * - "Summarize by Customer" checkbox filter: collapses the on-screen report
- *   to one row per customer (aggregated server side).
+ * Report settings are registered lazily by core when the report page loads,
+ * so registration is intercepted with a property setter instead of assuming
+ * load order.
  *
- * The report settings object is registered lazily by core when the report
- * page loads, so we intercept the registration with a property setter
- * instead of assuming load order.
- *
- * cyvetech-ar-ext v4
+ * cyvetech-ar-ext v5
  */
 (function () {
-	const REPORT_NAME = "Accounts Receivable";
-	const storage_key = () => `cyvetech:ar_print_fields:${frappe.session.user}`;
+	const REPORTS = {
+		"Accounts Receivable": { summarize_option: true },
+		"Accounts Receivable Summary": { summarize_option: false },
+	};
+	const legacy_key = () => `cyvetech:ar_print_fields:${frappe.session.user}`;
+	const storage_key = (report_name) =>
+		`cyvetech:print_fields:${report_name}:${frappe.session.user}`;
 
 	frappe.provide("frappe.query_reports");
+	Object.keys(REPORTS).forEach(setup);
 
-	let current_settings = frappe.query_reports[REPORT_NAME];
-	Object.defineProperty(frappe.query_reports, REPORT_NAME, {
-		configurable: true,
-		enumerable: true,
-		get() {
-			return current_settings;
-		},
-		set(settings) {
-			current_settings = extend_settings(settings);
-		},
-	});
-	if (current_settings) {
-		current_settings = extend_settings(current_settings);
+	function setup(report_name) {
+		let current_settings = frappe.query_reports[report_name];
+		Object.defineProperty(frappe.query_reports, report_name, {
+			configurable: true,
+			enumerable: true,
+			get() {
+				return current_settings;
+			},
+			set(settings) {
+				current_settings = extend_settings(settings, report_name);
+			},
+		});
+		if (current_settings) {
+			current_settings = extend_settings(current_settings, report_name);
+		}
 	}
 
-	function extend_settings(settings) {
+	function extend_settings(settings, report_name) {
 		if (!settings || settings.__cyvetech_extended) return settings;
 		settings.__cyvetech_extended = true;
 
-		(settings.filters = settings.filters || []).push(
-			{
-				fieldname: "remove_negative_balance",
-				label: __("Remove Customer Negative Balance"),
-				fieldtype: "Check",
-			},
-			{
+		const filters = (settings.filters = settings.filters || []);
+		filters.push({
+			fieldname: "remove_negative_balance",
+			label: __("Remove Customer Negative Balance"),
+			fieldtype: "Check",
+		});
+		if (REPORTS[report_name].summarize_option) {
+			filters.push({
 				fieldname: "summarize_by_customer",
 				label: __("Summarize by Customer"),
 				fieldtype: "Check",
-			}
-		);
+			});
+		}
 
 		const original_onload = settings.onload;
 		settings.onload = function (report) {
 			if (original_onload) original_onload.call(this, report);
 			const $print = report.page.add_inner_button(__("Print"), () =>
-				print_with_saved_fields(report)
+				print_with_saved_fields(report, report_name)
 			);
 			if ($print && $print.css) {
 				$print.css({
@@ -69,75 +76,85 @@
 					"font-weight": "600",
 				});
 			}
-			report.page.add_inner_button(__("Print Fields"), () => select_fields_and_print(report));
+			report.page.add_inner_button(__("Print Fields"), () =>
+				select_fields_and_print(report, report_name)
+			);
 		};
 		return settings;
 	}
 
-	function get_saved_config() {
-		try {
-			const saved = JSON.parse(localStorage.getItem(storage_key()));
-			// legacy format: a plain array of fieldnames
-			if (Array.isArray(saved)) {
-				return saved.length ? { fields: saved, summarize: 0 } : null;
+	function get_saved_config(report_name) {
+		const read = (key) => {
+			try {
+				return JSON.parse(localStorage.getItem(key));
+			} catch (e) {
+				return null;
 			}
-			if (saved && Array.isArray(saved.fields) && saved.fields.length) {
-				return saved;
-			}
-		} catch (e) {
-			// fall through
-		}
+		};
+		let saved = read(storage_key(report_name));
+		if (!saved && report_name === "Accounts Receivable") saved = read(legacy_key());
+		if (Array.isArray(saved)) return saved.length ? { fields: saved, summarize: 0 } : null;
+		if (saved && Array.isArray(saved.fields) && saved.fields.length) return saved;
 		return null;
 	}
 
-	function save_config(fields, summarize) {
-		localStorage.setItem(storage_key(), JSON.stringify({ fields, summarize: summarize ? 1 : 0 }));
+	function save_config(report_name, fields, summarize) {
+		localStorage.setItem(
+			storage_key(report_name),
+			JSON.stringify({ fields, summarize: summarize ? 1 : 0 })
+		);
 	}
 
-	function print_with_saved_fields(report) {
+	function report_ready(report) {
 		if (!report.datatable || !(report.columns || []).length) {
 			frappe.msgprint(__("Please wait for the report to load."));
-			return;
+			return false;
 		}
-		const saved = get_saved_config();
+		return true;
+	}
+
+	function print_with_saved_fields(report, report_name) {
+		if (!report_ready(report)) return;
+		const saved = get_saved_config(report_name);
 		if (saved) {
-			do_print(report, saved.fields, saved.summarize);
+			do_print(report, report_name, saved.fields, saved.summarize);
 		} else {
-			select_fields_and_print(report);
+			select_fields_and_print(report, report_name);
 		}
 	}
 
-	function select_fields_and_print(report) {
-		if (!report.datatable || !(report.columns || []).length) {
-			frappe.msgprint(__("Please wait for the report to load."));
-			return;
-		}
-		const saved = get_saved_config();
+	function select_fields_and_print(report, report_name) {
+		if (!report_ready(report)) return;
+		const saved = get_saved_config(report_name);
 		const options = report.get_visible_columns().map((col) => ({
 			label: __(col.label),
 			value: col.fieldname,
 			checked: saved ? saved.fields.includes(col.fieldname) : true,
 		}));
 
+		const dialog_fields = [
+			{
+				fieldname: "fields",
+				fieldtype: "MultiCheck",
+				label: __("Fields"),
+				columns: 2,
+				select_all: true,
+				options: options,
+			},
+		];
+		if (REPORTS[report_name].summarize_option) {
+			dialog_fields.push({
+				fieldname: "summarize_by_customer",
+				fieldtype: "Check",
+				label: __("Summarize by Customer"),
+				default: saved && saved.summarize ? 1 : 0,
+				description: __("One row per customer with summed amounts"),
+			});
+		}
+
 		const dialog = new frappe.ui.Dialog({
 			title: __("Select Fields to Print"),
-			fields: [
-				{
-					fieldname: "fields",
-					fieldtype: "MultiCheck",
-					label: __("Fields"),
-					columns: 2,
-					select_all: true,
-					options: options,
-				},
-				{
-					fieldname: "summarize_by_customer",
-					fieldtype: "Check",
-					label: __("Summarize by Customer"),
-					default: saved && saved.summarize ? 1 : 0,
-					description: __("One row per customer with summed amounts and a grand total"),
-				},
-			],
+			fields: dialog_fields,
 			primary_action_label: __("Save and Print"),
 			primary_action() {
 				const values = dialog.get_values();
@@ -146,86 +163,38 @@
 					frappe.msgprint(__("Please select at least one field."));
 					return;
 				}
-				save_config(selected, values.summarize_by_customer);
+				save_config(report_name, selected, values.summarize_by_customer);
 				dialog.hide();
-				do_print(report, selected, values.summarize_by_customer);
+				do_print(report, report_name, selected, values.summarize_by_customer);
 			},
 		});
 		dialog.show();
 	}
 
-	function do_print(report, fields, summarize) {
-		const print_settings = {
-			orientation: "Landscape",
-			include_filters: 1,
-			columns: fields,
-		};
+	function do_print(report, report_name, fields, summarize) {
+		const filters =
+			(report.get_filter_values && report.get_filter_values()) ||
+			(report.get_values && report.get_values()) ||
+			{};
 
-		if (!summarize) {
-			report.print_report(print_settings);
-			return;
-		}
-
-		// Core print_report always reads this.get_data_for_print(); swap it out
-		// for the duration of this (async) print to feed it summarized rows.
-		const original = report.get_data_for_print;
-		report.get_data_for_print = function () {
-			const rows = original.call(this);
-			const columns = this.get_visible_columns().filter((c) => fields.includes(c.fieldname));
-			return summarize_rows(rows, columns);
-		};
-		const restore = () => (report.get_data_for_print = original);
-		try {
-			const result = report.print_report(print_settings);
-			if (result && result.finally) {
-				result.finally(restore);
-			} else {
-				restore();
-			}
-		} catch (e) {
-			restore();
-			throw e;
-		}
-	}
-
-	function summarize_rows(rows, columns) {
-		// Sum numeric columns per customer; keep non-numeric values only when
-		// they are identical across the customer's rows. "age" is per-voucher,
-		// summing it would be meaningless.
-		const numeric = ["Currency", "Float", "Int"];
-		const sum_cols = columns.filter(
-			(c) => numeric.includes(c.fieldtype) && c.fieldname !== "age"
-		);
-		const other_cols = columns.filter((c) => !sum_cols.includes(c));
-
-		const groups = new Map(); // keeps A-Z insertion order from the report
-		(rows || []).forEach((row) => {
-			if (!row || typeof row !== "object" || !row.party || row.is_total_row) return;
-			if (!groups.has(row.party)) groups.set(row.party, []);
-			groups.get(row.party).push(row);
+		frappe.call({
+			method: "cyvetech_reports.overrides.ar_print.get_pdf_html",
+			args: {
+				report_name: report_name,
+				filters: JSON.stringify(filters),
+				visible_columns: JSON.stringify(fields),
+				summarize: summarize ? 1 : 0,
+			},
+			freeze: true,
+			freeze_message: __("Generating PDF..."),
+			callback(r) {
+				if (r.message) {
+					const w = window.open();
+					w.document.write(r.message);
+					w.document.close();
+					setTimeout(() => w.print(), 600);
+				}
+			},
 		});
-
-		const out = [];
-		const totals = {};
-		groups.forEach((group_rows) => {
-			const agg = { currency: group_rows[0].currency };
-			other_cols.forEach((c) => {
-				const values = new Set(group_rows.map((r) => r[c.fieldname] ?? ""));
-				agg[c.fieldname] = values.size === 1 ? values.values().next().value : "";
-			});
-			sum_cols.forEach((c) => {
-				const sum = group_rows.reduce((s, r) => s + (parseFloat(r[c.fieldname]) || 0), 0);
-				agg[c.fieldname] = sum;
-				totals[c.fieldname] = (totals[c.fieldname] || 0) + sum;
-			});
-			out.push(agg);
-		});
-
-		if (out.length && sum_cols.length) {
-			const total_row = Object.assign({ is_total_row: true, currency: out[0].currency }, totals);
-			if (other_cols.length) total_row[other_cols[0].fieldname] = __("Total");
-			out.push(total_row);
-		}
-		return out;
 	}
 })();

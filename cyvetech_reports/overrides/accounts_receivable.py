@@ -1,4 +1,4 @@
-"""Enhancements for the standard Accounts Receivable report.
+"""Enhancements for the standard Accounts Receivable / AR Summary reports.
 
 Applied by wrapping the public ``frappe.desk.query_report.run`` (present in
 all Frappe versions) via the ``before_request`` / ``before_job`` hooks, so the
@@ -29,7 +29,7 @@ import frappe
 from frappe import _
 from frappe.utils import flt
 
-TARGET_REPORTS = ("Accounts Receivable",)
+TARGET_REPORTS = ("Accounts Receivable", "Accounts Receivable Summary")
 
 _patched = False
 _original_run = None
@@ -94,7 +94,7 @@ def _insert_customer_name_column(result):
 	fieldnames = _fieldnames(columns)
 
 	# nothing to do, or core already added it (Customer Naming By = Naming Series)
-	if not fieldnames or "customer_name" in fieldnames:
+	if not fieldnames or "customer_name" in fieldnames or "party_name" in fieldnames:
 		return
 
 	# same position core uses: right after the Receivable Account column
@@ -115,6 +115,28 @@ def _insert_customer_name_column(result):
 			"sticky": True,
 		},
 	)
+
+	# AR detail rows already carry customer_name (set_party_details); the
+	# Summary variant does not, so fill in whatever is missing
+	missing = list(
+		{
+			r["party"]
+			for r in rows
+			if r.get("party") and not r.get("customer_name") and r.get("party_type") in (None, "Customer")
+		}
+	)
+	if missing:
+		names = dict(
+			frappe.get_all(
+				"Customer",
+				filters={"name": ("in", missing)},
+				fields=["name", "customer_name"],
+				as_list=True,
+			)
+		)
+		for r in rows:
+			if not r.get("customer_name") and r.get("party") in names:
+				r["customer_name"] = names[r["party"]]
 
 
 def _add_payment_mode_columns(result):
@@ -294,7 +316,7 @@ def verify():
 		# version tag comment bumped on every ar_extensions.js change
 		try:
 			with open(path, encoding="utf-8") as f:
-				return "cyvetech-ar-ext v4" in f.read()
+				return "cyvetech-ar-ext v5" in f.read()
 		except OSError:
 			return None  # file missing / unreadable
 
@@ -319,5 +341,19 @@ def verify():
 		"rows_sorted_a_to_z": names == sorted(names),
 		"columns": columns[:12],
 	}
+
+	summary = query_report.run(
+		"Accounts Receivable Summary",
+		filters={"report_date": frappe.utils.nowdate(), "range": "30, 60, 90, 120"},
+		ignore_prepared_report=True,
+	)
+	summary_columns = [c.get("fieldname") for c in (summary.get("columns") or []) if isinstance(c, dict)]
+	summary_rows = [r for r in (summary.get("result") or []) if isinstance(r, dict) and r.get("party")]
+	out["summary_customer_name_in_columns"] = (
+		"customer_name" in summary_columns or "party_name" in summary_columns
+	)
+	out["summary_names_populated"] = any(
+		r.get("customer_name") or r.get("party_name") for r in summary_rows
+	) or not summary_rows
 	print(out)
 	return out

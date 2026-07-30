@@ -14,13 +14,13 @@ Custom Frappe/ERPNext reports by Cyvetech.
 
 ## Customizations
 
-- **Accounts Receivable enhancements** — extends the standard ERPNext Accounts Receivable report:
+- **Accounts Receivable enhancements** — extends the standard ERPNext Accounts Receivable **and Accounts Receivable Summary** reports:
   - Customer Name column, regardless of the *Customer Naming By* setting
-  - Mode of Payment and Paid To (bank/cash account name, without account code) columns for Payment Entry rows
+  - Mode of Payment and Paid To (bank/cash account name, without account code) columns for Payment Entry rows (detail report)
   - Rows sorted by customer name A–Z on load
   - *Remove Customer Negative Balance* checkbox filter to hide negative-outstanding rows
-  - Green **Print** toolbar button with field selection; the selected fields are remembered per user, so subsequent prints are one click. The **Print Fields** button next to it changes the selection any time
-  - **Summarize by Customer** checkbox filter — collapses the report (on screen, in print, and in exports) to one row per customer with summed amounts; also available as a print-only option in the print dialog (remembered along with the field selection)
+  - Green **Print** toolbar button producing a branded printout (company letterhead, filter summary, totals cards, signature section — same styling as the other Cyvetech reports) with field selection; the selected fields are remembered per user and per report, so subsequent prints are one click. The **Print Fields** button next to it changes the selection any time
+  - **Summarize by Customer** checkbox filter (detail report) — collapses the report (on screen, in print, and in exports) to one row per customer with summed amounts; also available as a print-only option in the print dialog (remembered along with the field selection)
 
 ## Installation
 
