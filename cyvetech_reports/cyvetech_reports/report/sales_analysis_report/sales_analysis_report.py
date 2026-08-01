@@ -113,6 +113,7 @@ def get_columns(filters):
             {"label": _("Net Total"), "fieldname": "net_total", "fieldtype": "Currency", "width": 130},
             {"label": _("Grand Total"), "fieldname": "grand_total", "fieldtype": "Currency", "width": 140},
             {"label": _("Paid"), "fieldname": "paid_amount", "fieldtype": "Currency", "width": 130},
+            {"label": _("Advance (Unallocated)"), "fieldname": "advance_amount", "fieldtype": "Currency", "width": 130},
             {"label": _("Outstanding"), "fieldname": "outstanding", "fieldtype": "Currency", "width": 130},
         ]
 
@@ -449,7 +450,9 @@ def get_data(filters):
         receivables = get_customer_receivables(filters)
         if receivables is not None:
             for d in data:
-                d["outstanding"] = flt(receivables.get(d.get("customer"), 0.0))
+                entry = receivables.get(d.get("customer")) or {}
+                d["outstanding"] = flt(entry.get("due"))
+                d["advance_amount"] = flt(entry.get("advance"))
         return data
     if group_by == "Item":
         return build_grouped(raw, key_field="item_code", label_field="item_name",
@@ -463,8 +466,14 @@ def get_data(filters):
 
 
 def get_customer_receivables(filters):
-    """party -> amount actually due as at To Date, from the same engine the
-    Accounts Receivable Summary report uses, so both reports always agree."""
+    """party -> {"due", "advance"} as at To Date, from the same engine the
+    Accounts Receivable Summary report uses, so both reports always agree.
+
+    "due" is the Total Amount Due (aged buckets: invoices net of allocated
+    payments, JEs and credit notes). "advance" is payments/credits received
+    but not allocated to any invoice - AR shows these separately, not as a
+    reduction of the amount due.
+    """
     try:
         from erpnext.accounts.report.accounts_receivable_summary.accounts_receivable_summary import (
             AccountsReceivableSummary,
@@ -485,10 +494,13 @@ def get_customer_receivables(filters):
 
         receivables = {}
         for r in rows:
-            amount = r.get("total_due")
-            if amount is None:
-                amount = r.get("outstanding")
-            receivables[r.get("party")] = flt(amount)
+            due = r.get("total_due")
+            if due is None:
+                due = r.get("outstanding")
+            receivables[r.get("party")] = {
+                "due": flt(due),
+                "advance": flt(r.get("advance")),
+            }
         return receivables
     except Exception:
         frappe.log_error(title="Sales Analysis: customer receivables lookup failed")
@@ -1051,9 +1063,11 @@ def build_pdf_table(data, group_by, currency, total_qty, total_net,
         if vis("net_total"):      ths.append('<th class="text-right">Net Total</th>')
         if vis("grand_total"):    ths.append('<th class="text-right">Grand Total</th>')
         if vis("paid_amount"):    ths.append('<th class="text-right">Paid</th>')
+        if vis("advance_amount"): ths.append('<th class="text-right">Advance</th>')
         if vis("outstanding"):    ths.append('<th class="text-right">Outstanding</th>')
         headers_html = "<tr>" + "".join(ths) + "</tr>"
         n = 1 + sum([vis("customer"), vis("customer_name"), vis("customer_group"), vis("invoice_count")])
+        total_advance = sum(flt(d.get("advance_amount")) for d in data)
         rows_html = ""
         for idx, r in enumerate(data, 1):
             cls = "even" if idx % 2 == 0 else "odd"
@@ -1066,6 +1080,7 @@ def build_pdf_table(data, group_by, currency, total_qty, total_net,
             if vis("net_total"):      tds.append(f'<td class="text-right">{fmt(r.get("net_total"))}</td>')
             if vis("grand_total"):    tds.append(f'<td class="text-right">{fmt(r.get("grand_total"))}</td>')
             if vis("paid_amount"):    tds.append(f'<td class="text-right">{fmt(r.get("paid_amount"))}</td>')
+            if vis("advance_amount"): tds.append(f'<td class="text-right">{fmt(r.get("advance_amount"))}</td>')
             if vis("outstanding"):    tds.append(f'<td class="text-right">{fmt(r.get("outstanding"))}</td>')
             rows_html += f'<tr class="{cls}">{"".join(tds)}</tr>'
         tot = [f'<td colspan="{n}" class="text-right"><strong>GRAND TOTAL</strong></td>']
@@ -1073,6 +1088,7 @@ def build_pdf_table(data, group_by, currency, total_qty, total_net,
         if vis("net_total"):   tot.append(f'<td class="text-right"><strong>{fmt(total_net)}</strong></td>')
         if vis("grand_total"): tot.append(f'<td class="text-right"><strong>{fmt(total_grand)}</strong></td>')
         if vis("paid_amount"): tot.append(f'<td class="text-right"><strong>{fmt(total_paid)}</strong></td>')
+        if vis("advance_amount"): tot.append(f'<td class="text-right"><strong>{fmt(total_advance)}</strong></td>')
         if vis("outstanding"): tot.append(f'<td class="text-right"><strong>{fmt(total_outstanding)}</strong></td>')
         return headers_html, rows_html, '<tr class="totals-row">' + "".join(tot) + "</tr>"
 
