@@ -453,6 +453,7 @@ def get_data(filters):
                 entry = receivables.get(d.get("customer")) or {}
                 d["outstanding"] = flt(entry.get("due"))
                 d["advance_amount"] = flt(entry.get("advance"))
+            data.extend(build_balance_only_rows(data, receivables))
         return data
     if group_by == "Item":
         return build_grouped(raw, key_field="item_code", label_field="item_name",
@@ -505,6 +506,55 @@ def get_customer_receivables(filters):
     except Exception:
         frappe.log_error(title="Sales Analysis: customer receivables lookup failed")
         return None
+
+
+def build_balance_only_rows(data, receivables):
+    """Rows for customers with a ledger balance (debt or overpayment/credit)
+    but no sales in the period - they would otherwise be invisible in the
+    Customer view even though they owe money or have money with us."""
+    seen = {d.get("customer") for d in data}
+    extras = {
+        party: entry
+        for party, entry in receivables.items()
+        if party and party not in seen and (flt(entry.get("due")) or flt(entry.get("advance")))
+    }
+    if not extras:
+        return []
+
+    details = {
+        c.name: c
+        for c in frappe.get_all(
+            "Customer",
+            filters={"name": ("in", list(extras))},
+            fields=["name", "customer_name", "customer_group"],
+        )
+    }
+
+    rows = []
+    for party, entry in extras.items():
+        customer = details.get(party)
+        rows.append({
+            "customer": party,
+            "customer_name": (customer and customer.customer_name) or party,
+            "customer_group": (customer and customer.customer_group) or "",
+            "invoice_count": 0,
+            "customer_count": 0,
+            "item_count": 0,
+            "qty": 0.0,
+            "gross_total": 0.0,
+            "discount": 0.0,
+            "net_total": 0.0,
+            "tax": 0.0,
+            "grand_total": 0.0,
+            "paid_amount": 0.0,
+            "advance_amount": flt(entry.get("advance")),
+            "outstanding": flt(entry.get("due")),
+        })
+
+    # biggest debts first, overpayments (negative) at the end where they
+    # stand out against the zero-sales rows
+    rows.sort(key=lambda r: flt(r.get("outstanding")), reverse=True)
+    return rows
 
 
 def build_detailed(raw):
