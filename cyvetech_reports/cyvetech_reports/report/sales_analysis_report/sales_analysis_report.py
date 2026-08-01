@@ -439,8 +439,18 @@ def get_data(filters):
     if group_by == "Route":
         return build_grouped(raw, key_field="sales_person")
     if group_by == "Customer":
-        return build_grouped(raw, key_field="customer", label_field="customer_name",
+        data = build_grouped(raw, key_field="customer", label_field="customer_name",
                              extra_fields=["customer_group"])
+        # Outstanding must reflect what the customer actually owes as at To
+        # Date (per the receivables ledger: older invoices, advances, credit
+        # notes and unallocated payments included) - not just the unpaid
+        # portion of the invoices in the period, which overstates debt for
+        # customers with unreconciled payments.
+        receivables = get_customer_receivables(filters)
+        if receivables is not None:
+            for d in data:
+                d["outstanding"] = flt(receivables.get(d.get("customer"), 0.0))
+        return data
     if group_by == "Item":
         return build_grouped(raw, key_field="item_code", label_field="item_name",
                              extra_fields=["item_group", "brand", "uom"], compute_avg_rate=True)
@@ -450,6 +460,39 @@ def get_data(filters):
         return build_grouped(raw, key_field="posting_date")
 
     return build_detailed_clean(filters)
+
+
+def get_customer_receivables(filters):
+    """party -> amount actually due as at To Date, from the same engine the
+    Accounts Receivable Summary report uses, so both reports always agree."""
+    try:
+        from erpnext.accounts.report.accounts_receivable_summary.accounts_receivable_summary import (
+            AccountsReceivableSummary,
+        )
+
+        args = {
+            "account_type": "Receivable",
+            "naming_by": ["Selling Settings", "cust_master_name"],
+        }
+        ar_filters = frappe._dict(
+            {
+                "company": filters.get("company"),
+                "report_date": filters.get("to_date") or frappe.utils.nowdate(),
+                "range": "30, 60, 90, 120",
+            }
+        )
+        _, rows = AccountsReceivableSummary(ar_filters).run(args)
+
+        receivables = {}
+        for r in rows:
+            amount = r.get("total_due")
+            if amount is None:
+                amount = r.get("outstanding")
+            receivables[r.get("party")] = flt(amount)
+        return receivables
+    except Exception:
+        frappe.log_error(title="Sales Analysis: customer receivables lookup failed")
+        return None
 
 
 def build_detailed(raw):
