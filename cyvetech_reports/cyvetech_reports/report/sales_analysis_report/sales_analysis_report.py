@@ -375,10 +375,12 @@ def get_raw_data(filters):
             si.customer_group                          AS customer_group,
             si.territory                               AS territory,
             si.grand_total                             AS si_grand_total,
+            si.rounded_total                           AS si_rounded_total,
             si.outstanding_amount                      AS si_outstanding,
             si.is_return                               AS is_return,
             COALESCE(st.sales_person, 'Unassigned')    AS sales_person,
             COALESCE(st.allocated_percentage, 100)     AS allocated_percentage,
+            sii.name                                   AS line_id,
             sii.item_code                              AS item_code,
             sii.item_name                              AS item_name,
             sii.item_group                             AS item_group,
@@ -402,12 +404,20 @@ def get_raw_data(filters):
     # Apply allocation percentage to amount fields
     for r in rows:
         alloc = flt(r.allocated_percentage) / 100.0
+        # unscaled copies for groupings that must not depend on sales-team allocation
+        r.full_qty = flt(r.qty)
+        r.full_net_total = flt(r.net_total)
+        r.full_discount = flt(r.discount_amount)
+        # outstanding_amount is based on rounded_total when rounding is enabled,
+        # so paid must be derived from the same base or unpaid invoices show a
+        # phantom negative paid amount
+        r.si_effective_total = flt(r.si_rounded_total) or flt(r.si_grand_total)
         r.qty = flt(r.qty) * alloc
         r.net_total = flt(r.net_total) * alloc
         r.discount_amount = flt(r.discount_amount) * alloc
         r.allocated_grand_total = flt(r.si_grand_total) * alloc
         r.allocated_outstanding = flt(r.si_outstanding) * alloc
-        r.allocated_paid = (flt(r.si_grand_total) - flt(r.si_outstanding)) * alloc
+        r.allocated_paid = (r.si_effective_total - flt(r.si_outstanding)) * alloc
 
     return rows
 
@@ -497,6 +507,7 @@ def build_detailed_clean(filters):
             si.customer_group         AS customer_group,
             si.territory              AS territory,
             si.grand_total            AS grand_total,
+            si.rounded_total          AS rounded_total,
             si.outstanding_amount     AS outstanding_amount,
             si.is_return              AS is_return,
             sii.item_code             AS item_code,
@@ -539,9 +550,13 @@ def build_detailed_clean(filters):
             "rate": flt(r.rate),
             "discount_amount": flt(r.discount_amount),
             "net_total": flt(r.net_total),
-            # Invoice-level totals only on the first item row of each invoice
+            # Invoice-level totals only on the first item row of each invoice.
+            # Paid is derived from rounded_total when set - outstanding_amount
+            # is based on it, deriving from grand_total shows phantom negatives.
             "grand_total": flt(r.grand_total) if first_of_invoice else 0.0,
-            "paid_amount": flt(r.grand_total - r.outstanding_amount) if first_of_invoice else 0.0,
+            "paid_amount": flt((flt(r.rounded_total) or flt(r.grand_total)) - flt(r.outstanding_amount))
+            if first_of_invoice
+            else 0.0,
             "outstanding": flt(r.outstanding_amount) if first_of_invoice else 0.0,
         })
 
@@ -562,6 +577,7 @@ def build_invoice_grouped(filters):
             si.customer_name      AS customer_name,
             si.customer_group     AS customer_group,
             si.grand_total        AS grand_total,
+            si.rounded_total      AS rounded_total,
             si.outstanding_amount AS outstanding_amount,
             COUNT(DISTINCT sii.item_code) AS item_count,
             SUM(sii.qty)          AS qty,
@@ -578,6 +594,7 @@ def build_invoice_grouped(filters):
     for r in rows:
         grand = flt(r.grand_total)
         outstanding = flt(r.outstanding_amount)
+        effective_total = flt(r.rounded_total) or grand
         data.append({
             "posting_date": r.posting_date,
             "invoice": r.invoice,
@@ -589,7 +606,7 @@ def build_invoice_grouped(filters):
             "qty": flt(r.qty),
             "net_total": flt(r.net_total),
             "grand_total": grand,
-            "paid_amount": grand - outstanding,
+            "paid_amount": effective_total - outstanding,
             "outstanding": outstanding,
         })
     return data
@@ -600,6 +617,13 @@ def build_grouped(raw, key_field, label_field=None, extra_fields=None, compute_a
     extra_fields = extra_fields or []
     groups = {}
     invoice_seen_by_group = {}
+    line_seen_by_group = {}
+
+    # Only the Route grouping splits amounts by sales-team allocation. Every
+    # other grouping must use full invoice/line values: the Sales Team join
+    # duplicates each item line once per salesperson, and adding only the
+    # first-seen allocated fraction undercounts multi-salesperson invoices.
+    route_mode = key_field == "sales_person"
 
     for r in raw:
         key = r.get(key_field)
@@ -632,27 +656,48 @@ def build_grouped(raw, key_field, label_field=None, extra_fields=None, compute_a
                 g[f] = r.get(f)
             groups[key] = g
             invoice_seen_by_group[key] = set()
+            line_seen_by_group[key] = set()
 
         g = groups[key]
-        g["qty"] += flt(r.qty)
-        g["discount"] += flt(r.discount_amount)
-        g["net_total"] += flt(r.net_total)
+
+        if route_mode:
+            line_qty = flt(r.qty)
+            add_line = True
+        else:
+            line_qty = flt(r.full_qty)
+            add_line = r.line_id not in line_seen_by_group[key]
+
+        if add_line:
+            line_seen_by_group[key].add(r.line_id)
+            if route_mode:
+                g["qty"] += flt(r.qty)
+                g["discount"] += flt(r.discount_amount)
+                g["net_total"] += flt(r.net_total)
+            else:
+                g["qty"] += flt(r.full_qty)
+                g["discount"] += flt(r.full_discount)
+                g["net_total"] += flt(r.full_net_total)
+            if compute_avg_rate:
+                g["_rate_sum"] += flt(r.rate) * line_qty
+                g["_rate_qty"] += line_qty
+
         g["_invoices"].add(r.invoice)
         if r.customer:
             g["_customers"].add(r.customer)
         if r.item_code:
             g["_items"].add(r.item_code)
 
-        if compute_avg_rate:
-            g["_rate_sum"] += flt(r.rate) * flt(r.qty)
-            g["_rate_qty"] += flt(r.qty)
-
         # Invoice-level totals only once per (group, invoice)
         if r.invoice not in invoice_seen_by_group[key]:
             invoice_seen_by_group[key].add(r.invoice)
-            g["grand_total"] += flt(r.allocated_grand_total)
-            g["paid_amount"] += flt(r.allocated_paid)
-            g["outstanding"] += flt(r.allocated_outstanding)
+            if route_mode:
+                g["grand_total"] += flt(r.allocated_grand_total)
+                g["paid_amount"] += flt(r.allocated_paid)
+                g["outstanding"] += flt(r.allocated_outstanding)
+            else:
+                g["grand_total"] += flt(r.si_grand_total)
+                g["paid_amount"] += flt(r.si_effective_total) - flt(r.si_outstanding)
+                g["outstanding"] += flt(r.si_outstanding)
 
     # Finalize
     data = []
