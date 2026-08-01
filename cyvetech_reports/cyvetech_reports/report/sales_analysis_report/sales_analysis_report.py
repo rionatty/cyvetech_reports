@@ -470,10 +470,11 @@ def get_customer_receivables(filters):
     """party -> {"due", "advance"} as at To Date, from the same engine the
     Accounts Receivable Summary report uses, so both reports always agree.
 
-    "due" is the Total Amount Due (aged buckets: invoices net of allocated
-    payments, JEs and credit notes). "advance" is payments/credits received
-    but not allocated to any invoice - AR shows these separately, not as a
-    reduction of the amount due.
+    "due" is AR Summary's Outstanding column (invoices net of allocated
+    payments, JEs and credit notes). Not total_due - that only sums the aged
+    buckets, so invoices not yet due (future due dates) would show as zero.
+    "advance" is payments/credits received but not allocated to any invoice -
+    AR shows these separately, not as a reduction of the amount due.
     """
     try:
         from erpnext.accounts.report.accounts_receivable_summary.accounts_receivable_summary import (
@@ -495,11 +496,8 @@ def get_customer_receivables(filters):
 
         receivables = {}
         for r in rows:
-            due = r.get("total_due")
-            if due is None:
-                due = r.get("outstanding")
             receivables[r.get("party")] = {
-                "due": flt(due),
+                "due": flt(r.get("outstanding")),
                 "advance": flt(r.get("advance")),
             }
         return receivables
