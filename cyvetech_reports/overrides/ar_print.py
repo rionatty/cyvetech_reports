@@ -20,6 +20,14 @@ from cyvetech_reports.cyvetech_reports.report.sales_analysis_report.sales_analys
 ALLOWED_REPORTS = ("Accounts Receivable", "Accounts Receivable Summary")
 NUMERIC_TYPES = {"Currency", "Float", "Int"}
 
+# AR-only overrides on top of the shared branded CSS: tighter rows so long
+# customer lists fit on fewer pages
+_AR_PRINT_CSS = """
+	table.report-table td { padding: 2px 3px; line-height: 1.15; }
+	table.report-table th { padding: 4px 3px; }
+	tr.totals-row td { padding: 6px 3px; }
+"""
+
 
 @frappe.whitelist()
 def get_pdf_html(report_name, filters, visible_columns=None, summarize=0):
@@ -66,7 +74,6 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0):
 
 	letter_head_html = _company_header_html(company_doc)
 	filter_html = _build_filter_html(filters, company)
-	cards_html = _build_summary_cards(rows, currency)
 	headers_html, rows_html, totals_html = _build_table(columns, rows, currency)
 
 	report_date = filters.get("report_date")
@@ -82,7 +89,7 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0):
 	return (
 		'<!DOCTYPE html><html><head><meta charset="UTF-8">'
 		"<title>" + title + "</title>"
-		"<style>" + get_pdf_css() + "</style></head><body>"
+		"<style>" + get_pdf_css() + _AR_PRINT_CSS + "</style></head><body>"
 		+ letter_head_html
 		+ '<div class="report-header">'
 		'<div class="report-title">'
@@ -99,7 +106,6 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0):
 		'<div class="filters-title">' + _("Applied Filters") + "</div>"
 		'<div class="filters-grid">' + filter_html + "</div>"
 		"</div>"
-		+ cards_html
 		+ '<table class="report-table"><thead>' + headers_html + "</thead>"
 		"<tbody>" + rows_html + totals_html + "</tbody></table>"
 		'<div class="signature-section">'
@@ -150,29 +156,6 @@ def _build_filter_html(filters, company):
 				"</div>"
 			)
 	return html
-
-
-def _build_summary_cards(rows, currency):
-	def col_sum(field):
-		return sum(flt(r.get(field)) for r in rows)
-
-	cards = [
-		("card-blue", _("Invoiced"), fmt_money(col_sum("invoiced"), currency=currency)),
-		("card-green", _("Paid"), fmt_money(col_sum("paid"), currency=currency)),
-		("card-purple", _("Credit Note"), fmt_money(col_sum("credit_note"), currency=currency)),
-		("card-red", _("Outstanding"), fmt_money(col_sum("outstanding"), currency=currency)),
-		("card-grey", _("Customers"), str(len({r.get("party") for r in rows}))),
-	]
-
-	html = '<div class="summary-cards">'
-	for css_class, label, value in cards:
-		html += (
-			'<div class="summary-card ' + css_class + '">'
-			'<div class="label">' + escape_html(str(label)) + "</div>"
-			'<div class="value">' + value + "</div>"
-			"</div>"
-		)
-	return html + "</div>"
 
 
 def _build_table(columns, rows, currency):
