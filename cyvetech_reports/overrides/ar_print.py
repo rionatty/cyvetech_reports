@@ -76,6 +76,15 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0):
 	filter_html = _build_filter_html(filters, company)
 	headers_html, rows_html, totals_html = _build_table(columns, rows, currency)
 
+	# with only a few fields selected, a full-width table strands the amounts
+	# at the far page edge - let it shrink so values sit next to the names
+	compact_css = (
+		"table.report-table { width: auto; min-width: 55%; }"
+		" table.report-table td, table.report-table th { padding-left: 8px; padding-right: 8px; }"
+		if len(columns) <= 3
+		else ""
+	)
+
 	report_date = filters.get("report_date")
 	subtitle = _("As at {0}").format(formatdate(report_date)) if report_date else ""
 	if cint(filters.get("summarize_by_customer")):
@@ -89,7 +98,7 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0):
 	return (
 		'<!DOCTYPE html><html><head><meta charset="UTF-8">'
 		"<title>" + title + "</title>"
-		"<style>" + get_pdf_css() + _AR_PRINT_CSS + "</style></head><body>"
+		"<style>" + get_pdf_css() + _AR_PRINT_CSS + compact_css + "</style></head><body>"
 		+ letter_head_html
 		+ '<div class="report-header">'
 		'<div class="report-title">'
