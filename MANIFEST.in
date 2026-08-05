@@ -1,1 +1,0 @@
-recursive-include cyvetech_reports *.json *.js *.css *.html *.txt *.py
