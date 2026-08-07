@@ -20,9 +20,19 @@ from cyvetech_reports.cyvetech_reports.report.sales_analysis_report.sales_analys
 ALLOWED_REPORTS = ("Accounts Receivable", "Accounts Receivable Summary")
 NUMERIC_TYPES = {"Currency", "Float", "Int"}
 
-# AR-only overrides on top of the shared branded CSS: tighter rows so long
-# customer lists fit on fewer pages
+# AR-only overrides on top of the shared branded CSS: A4 portrait instead of
+# landscape, tighter rows so long customer lists fit on fewer pages, and a
+# header scaled to the narrower page so it never clips
 _AR_PRINT_CSS = """
+	@page { size: A4 portrait; margin: 10mm; }
+	html, body { width: 100%; max-width: 100%; overflow-x: hidden; }
+	body { font-size: 8pt; }
+	.letter-head img { max-height: 55px; }
+	.report-title h1 { font-size: 13pt; }
+	.report-title .subtitle { font-size: 8pt; }
+	.report-header { padding: 10px 12px; }
+	.report-meta { font-size: 7pt; }
+	.filters-grid { grid-template-columns: repeat(2, 1fr); }
 	table.report-table td { padding: 2px 3px; line-height: 1.15; }
 	table.report-table th { padding: 4px 3px; }
 	tr.totals-row td { padding: 6px 3px; }
