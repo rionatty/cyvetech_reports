@@ -89,6 +89,26 @@ def _fieldnames(columns):
 	return [c.get("fieldname") for c in columns if isinstance(c, dict)]
 
 
+def _insert_columns(result, idx, new_columns):
+	"""Insert column defs plus matching blank cells into any list-type rows.
+
+	The server-appended grand total row is a positional list sized to the
+	original column count; the Excel export indexes list rows by column
+	position, so widening the columns without padding such rows crashes
+	the export with an IndexError.
+	"""
+	columns = result.get("columns") or []
+	columns[idx:idx] = new_columns
+
+	rows = result.get("result") or []
+	blanks = [""] * len(new_columns)
+	for i, row in enumerate(rows):
+		if isinstance(row, (list, tuple)):
+			row = list(row)
+			row[idx:idx] = blanks
+			rows[i] = row
+
+
 def _insert_customer_name_column(result):
 	columns, rows = _get_columns_and_rows(result)
 	fieldnames = _fieldnames(columns)
@@ -105,15 +125,18 @@ def _insert_customer_name_column(result):
 	else:
 		return
 
-	columns.insert(
+	_insert_columns(
+		result,
 		idx,
-		{
-			"label": _("Customer Name"),
-			"fieldname": "customer_name",
-			"fieldtype": "Data",
-			"width": 180,
-			"sticky": True,
-		},
+		[
+			{
+				"label": _("Customer Name"),
+				"fieldname": "customer_name",
+				"fieldtype": "Data",
+				"width": 180,
+				"sticky": True,
+			}
+		],
 	)
 
 	# AR detail rows already carry customer_name (set_party_details); the
@@ -147,20 +170,24 @@ def _add_payment_mode_columns(result):
 		return
 
 	idx = fieldnames.index("voucher_no") + 1
-	columns[idx:idx] = [
-		{
-			"label": _("Mode of Payment"),
-			"fieldname": "mode_of_payment",
-			"fieldtype": "Data",
-			"width": 130,
-		},
-		{
-			"label": _("Paid To"),
-			"fieldname": "paid_to_account",
-			"fieldtype": "Data",
-			"width": 150,
-		},
-	]
+	_insert_columns(
+		result,
+		idx,
+		[
+			{
+				"label": _("Mode of Payment"),
+				"fieldname": "mode_of_payment",
+				"fieldtype": "Data",
+				"width": 130,
+			},
+			{
+				"label": _("Paid To"),
+				"fieldname": "paid_to_account",
+				"fieldtype": "Data",
+				"width": 150,
+			},
+		],
+	)
 
 	payment_entries = list(
 		{r.get("voucher_no") for r in rows if r.get("voucher_type") == "Payment Entry" and r.get("voucher_no")}
