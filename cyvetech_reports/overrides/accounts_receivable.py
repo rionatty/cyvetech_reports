@@ -343,7 +343,7 @@ def verify():
 		# version tag comment bumped on every ar_extensions.js change
 		try:
 			with open(path, encoding="utf-8") as f:
-				return "cyvetech-ar-ext v6" in f.read()
+				return "cyvetech-ar-ext v7" in f.read()
 		except OSError:
 			return None  # file missing / unreadable
 

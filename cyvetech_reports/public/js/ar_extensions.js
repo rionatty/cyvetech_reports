@@ -13,7 +13,7 @@
  * so registration is intercepted with a property setter instead of assuming
  * load order.
  *
- * cyvetech-ar-ext v6
+ * cyvetech-ar-ext v7
  */
 (function () {
 	const REPORTS = {
@@ -93,9 +93,15 @@
 		};
 		let saved = read(storage_key(report_name));
 		if (!saved && report_name === "Accounts Receivable") saved = read(legacy_key());
-		if (Array.isArray(saved)) return saved.length ? { fields: saved, summarize: 0 } : null;
-		if (saved && Array.isArray(saved.fields) && saved.fields.length) return saved;
-		return null;
+		if (Array.isArray(saved)) saved = saved.length ? { fields: saved, summarize: 0 } : null;
+		if (!saved || !Array.isArray(saved.fields) || !saved.fields.length) return null;
+
+		// configs saved before an option existed have no key for it - fall back
+		// to the report default instead of reading undefined as "off"
+		if (saved.group_summary === undefined) {
+			saved.group_summary = REPORTS[report_name].group_summary_option ? 1 : 0;
+		}
+		return saved;
 	}
 
 	function save_config(report_name, fields, summarize, group_summary) {
@@ -159,8 +165,8 @@
 			dialog_fields.push({
 				fieldname: "group_summary",
 				fieldtype: "Check",
-				// no saved config yet -> default on, this is the format the client asked for
-				default: saved ? (saved.group_summary ? 1 : 0) : 1,
+				// defaults on - this is the format the client asked for
+				default: saved && !saved.group_summary ? 0 : 1,
 				label: __("Group Summary (Debit / Credit)"),
 				description: __(
 					"Closing balance split into Debit and Credit, with Carried Over / Brought Forward per page"
