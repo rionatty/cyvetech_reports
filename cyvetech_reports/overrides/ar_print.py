@@ -155,68 +155,42 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0, group_
 
 # Tally-style "Group Summary": one line per customer with the closing balance
 # split into Debit / Credit, a running Carried Over at each page foot and the
-# matching Brought Forward at the next page head.
-_GROUP_SUMMARY_ROWS_FIRST = 44
-_GROUP_SUMMARY_ROWS_REST = 52
+# matching Brought Forward at the next page head - under the standard Cyvetech
+# branded header.
+#
+# Pagination is computed server side (CSS cannot produce running per-page
+# subtotals), so these are the row counts that fit an A4 portrait page. Page 1
+# carries the letterhead, gradient band and Applied Filters, so it holds fewer
+# lines than the continuation pages, which carry the band only. Lower these if
+# a page ever spills a single row onto the next one.
+_GROUP_SUMMARY_ROWS_FIRST = 34
+_GROUP_SUMMARY_ROWS_REST = 44
 
 _GROUP_SUMMARY_CSS = """
-	@page { size: A4 portrait; margin: 10mm; }
-	* { box-sizing: border-box; margin: 0; padding: 0; }
-	body { font-family: 'Helvetica Neue', Arial, sans-serif; font-size: 8.5pt;
-	       color: #000; background: #fff; line-height: 1.25; }
 	.gs-page { page-break-after: always; }
 	.gs-page:last-child { page-break-after: auto; }
-	.gs-co { text-align: center; margin-bottom: 2px; }
-	.gs-co .name { font-size: 11pt; font-weight: 700; }
-	.gs-co div { font-size: 7.5pt; }
-	.gs-title { text-align: center; margin: 6px 0 2px 0; }
-	.gs-title .t1 { font-weight: 700; font-size: 10pt; }
-	.gs-title .t2 { font-size: 9pt; }
-	.gs-title .t3 { font-size: 8pt; }
-	.gs-cont-head { display: flex; justify-content: space-between; align-items: baseline;
-	                border-bottom: 1px solid #000; padding-bottom: 3px; margin-bottom: 4px;
-	                font-size: 9pt; }
-	.gs-pageno { text-align: right; font-size: 8pt; margin-bottom: 4px; }
-	table.gs { width: 100%; border-collapse: collapse; }
-	table.gs th, table.gs td { padding: 1px 4px; }
-	table.gs th { font-size: 8.5pt; }
-	table.gs td.amt, table.gs th.amt { text-align: right; width: 20%;
+	.gs-page + .gs-page .report-header { margin-top: 0; }
+	table.gs { width: 100%; border-collapse: collapse; font-size: 8pt;
+	           margin-top: 6px; }
+	table.gs th, table.gs td { padding: 1.5px 6px; }
+	table.gs td.amt, table.gs th.amt { text-align: right; width: 19%;
 	                                   font-variant-numeric: tabular-nums; }
-	.gs-cb { border-bottom: 1px solid #000; text-align: center; font-weight: 600; }
-	.gs-dc th { border-bottom: 1px solid #000; text-align: right; font-weight: 600; }
-	tr.gs-carry td { border-top: 1px solid #000; font-weight: 600; padding-top: 3px; }
-	tr.gs-total td { border-top: 1px solid #000; border-bottom: 3px double #000;
-	                 font-weight: 700; padding: 4px; }
-	.gs-cont { text-align: right; font-size: 8pt; font-style: italic; margin-top: 2px; }
-	@media print { body { -webkit-print-color-adjust: exact; print-color-adjust: exact; } }
+	table.gs th.gs-cb { text-align: center; font-weight: 600; font-size: 8pt;
+	                    text-transform: uppercase; letter-spacing: 0.3px;
+	                    color: #5e72e4; border-bottom: 1px solid #cbd5e0; }
+	table.gs tr.gs-dc th { text-align: right; font-weight: 700; font-size: 7.5pt;
+	                       text-transform: uppercase; letter-spacing: 0.3px;
+	                       border-bottom: 1.5px solid #4a5568; }
+	table.gs tr.gs-dc th.nm { text-align: left; }
+	table.gs tbody tr.odd { background: #ffffff; }
+	table.gs tbody tr.even { background: #f7fafc; }
+	tr.gs-carry td { border-top: 1px solid #4a5568; font-weight: 600;
+	                 padding-top: 3px; background: #fff; }
+	tr.gs-total td { border-top: 1.5px solid #4a5568; border-bottom: 3px double #4a5568;
+	                 font-weight: 700; padding: 5px 6px; background: #f0f4ff; }
+	.gs-cont { text-align: right; font-size: 7.5pt; font-style: italic;
+	           margin-top: 3px; color: #718096; }
 """
-
-
-def _company_address_lines(company_doc):
-	lines = []
-	if not company_doc:
-		return lines
-	try:
-		addr_name = frappe.db.get_value(
-			"Dynamic Link",
-			{"link_doctype": "Company", "link_name": company_doc.name, "parenttype": "Address"},
-			"parent",
-		)
-		if addr_name:
-			addr = frappe.get_doc("Address", addr_name)
-			for f in ("address_line1", "address_line2", "city", "state"):
-				v = getattr(addr, f, None)
-				if v:
-					lines.append(str(v))
-	except Exception:
-		pass
-	if company_doc.phone_no:
-		lines.append(_("Tel: {0}").format(company_doc.phone_no))
-	if getattr(company_doc, "tax_id", None):
-		lines.append(_("TIN: {0}").format(company_doc.tax_id))
-	if company_doc.email:
-		lines.append(_("Email: {0}").format(company_doc.email))
-	return lines
 
 
 def _build_group_summary_html(report_name, filters, rows, company, company_doc, currency):
@@ -256,15 +230,53 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 	report_date = filters.get("report_date")
 	period = _("As at {0}").format(formatdate(report_date)) if report_date else ""
 
-	address_html = "".join(
-		"<div>" + escape_html(line) + "</div>" for line in _company_address_lines(company_doc)
-	)
+	now = format_datetime(get_datetime(), "dd MMM yyyy HH:mm")
+	user = escape_html(str(frappe.session.user))
+	letter_head_html = _company_header_html(company_doc)
+	filter_html = _build_filter_html(filters, company)
+	total_pages = len(pages)
+
+	def branded_head(page_no):
+		"""Standard Cyvetech header: full letterhead + filters on page 1, the
+		gradient band alone on continuation pages so they stay branded without
+		spending a third of the page on it."""
+		subtitle = escape_html(period)
+		if total_pages > 1:
+			subtitle += (" &nbsp;|&nbsp; " if subtitle else "") + _("Page {0} of {1}").format(
+				page_no, total_pages
+			)
+
+		band = (
+			'<div class="report-header">'
+			'<div class="report-title">'
+			"<h1>" + title + "</h1>"
+			'<div class="subtitle">' + subtitle + "</div>"
+			"</div>"
+			'<div class="report-meta">'
+			'<div><span class="label">' + _("Company") + ":</span> <strong>" + company_label + "</strong></div>"
+			'<div><span class="label">' + _("Generated") + ":</span> " + str(now) + "</div>"
+			'<div><span class="label">' + _("By") + ":</span> " + user + "</div>"
+			"</div>"
+			"</div>"
+		)
+
+		if page_no > 1:
+			return band
+
+		return (
+			letter_head_html
+			+ band
+			+ '<div class="filters-section">'
+			'<div class="filters-title">' + _("Applied Filters") + "</div>"
+			'<div class="filters-grid">' + filter_html + "</div>"
+			"</div>"
+		)
 
 	def column_head():
 		return (
 			"<thead>"
 			'<tr><th></th><th class="amt gs-cb" colspan="2">' + _("Closing Balance") + "</th></tr>"
-			'<tr class="gs-dc"><th></th>'
+			'<tr class="gs-dc"><th class="nm">' + _("Customer Name") + "</th>"
 			'<th class="amt">' + _("Debit") + "</th>"
 			'<th class="amt">' + _("Credit") + "</th></tr>"
 			"</thead>"
@@ -272,7 +284,6 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 
 	html_pages = []
 	run_debit = run_credit = 0.0
-	total_pages = len(pages)
 
 	for page_no, page_rows in enumerate(pages, 1):
 		open_debit, open_credit = run_debit, run_credit
@@ -285,11 +296,13 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 				'<td class="amt">' + money(open_credit) + "</td></tr>"
 			)
 
-		for e in page_rows:
+		for idx, e in enumerate(page_rows):
 			run_debit += e["debit"]
 			run_credit += e["credit"]
 			body += (
-				"<tr><td>" + escape_html(e["name"]) + "</td>"
+				'<tr class="' + ("odd" if idx % 2 == 0 else "even") + '"><td>'
+				+ escape_html(e["name"])
+				+ "</td>"
 				'<td class="amt">' + money(e["debit"]) + "</td>"
 				'<td class="amt">' + money(e["credit"]) + "</td></tr>"
 			)
@@ -308,31 +321,11 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 				'<td class="amt">' + money(run_credit) + "</td></tr>"
 			)
 
-		if page_no == 1:
-			head = (
-				'<div class="gs-co">'
-				'<div class="name">' + company_label + "</div>" + address_html + "</div>"
-				'<div class="gs-title">'
-				'<div class="t1">' + title + "</div>"
-				'<div class="t2">' + _("Group Summary") + "</div>"
-				'<div class="t3">' + escape_html(period) + "</div>"
-				"</div>"
-				'<div class="gs-pageno">' + _("Page {0}").format(page_no) + "</div>"
-			)
-		else:
-			head = (
-				'<div class="gs-co"><div class="name">' + company_label + "</div></div>"
-				'<div class="gs-cont-head">'
-				"<div>" + title + " " + _("Group Summary") + " : " + escape_html(period) + "</div>"
-				"<div>" + _("Page {0}").format(page_no) + "</div>"
-				"</div>"
-			)
-
 		footer = "" if is_last else '<div class="gs-cont">' + _("continued ...") + "</div>"
 
 		html_pages.append(
 			'<div class="gs-page">'
-			+ head
+			+ branded_head(page_no)
 			+ '<table class="gs">'
 			+ column_head()
 			+ "<tbody>"
@@ -342,10 +335,11 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 			+ "</div>"
 		)
 
+	css = get_pdf_css() + _AR_PORTRAIT_CSS + _GROUP_SUMMARY_CSS
 	return (
 		'<!DOCTYPE html><html><head><meta charset="UTF-8">'
 		"<title>" + title + "</title>"
-		"<style>" + _GROUP_SUMMARY_CSS + "</style></head><body>"
+		"<style>" + css + "</style></head><body>"
 		+ "".join(html_pages)
 		+ "</body></html>"
 	)
