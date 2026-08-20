@@ -13,12 +13,12 @@
  * so registration is intercepted with a property setter instead of assuming
  * load order.
  *
- * cyvetech-ar-ext v5
+ * cyvetech-ar-ext v6
  */
 (function () {
 	const REPORTS = {
-		"Accounts Receivable": { summarize_option: true },
-		"Accounts Receivable Summary": { summarize_option: false },
+		"Accounts Receivable": { summarize_option: true, group_summary_option: false },
+		"Accounts Receivable Summary": { summarize_option: false, group_summary_option: true },
 	};
 	const legacy_key = () => `cyvetech:ar_print_fields:${frappe.session.user}`;
 	const storage_key = (report_name) =>
@@ -98,10 +98,14 @@
 		return null;
 	}
 
-	function save_config(report_name, fields, summarize) {
+	function save_config(report_name, fields, summarize, group_summary) {
 		localStorage.setItem(
 			storage_key(report_name),
-			JSON.stringify({ fields, summarize: summarize ? 1 : 0 })
+			JSON.stringify({
+				fields,
+				summarize: summarize ? 1 : 0,
+				group_summary: group_summary ? 1 : 0,
+			})
 		);
 	}
 
@@ -117,7 +121,7 @@
 		if (!report_ready(report)) return;
 		const saved = get_saved_config(report_name);
 		if (saved) {
-			do_print(report, report_name, saved.fields, saved.summarize);
+			do_print(report, report_name, saved.fields, saved.summarize, saved.group_summary);
 		} else {
 			select_fields_and_print(report, report_name);
 		}
@@ -151,6 +155,18 @@
 				description: __("One row per customer with summed amounts"),
 			});
 		}
+		if (REPORTS[report_name].group_summary_option) {
+			dialog_fields.push({
+				fieldname: "group_summary",
+				fieldtype: "Check",
+				// no saved config yet -> default on, this is the format the client asked for
+				default: saved ? (saved.group_summary ? 1 : 0) : 1,
+				label: __("Group Summary (Debit / Credit)"),
+				description: __(
+					"Closing balance split into Debit and Credit, with Carried Over / Brought Forward per page"
+				),
+			});
+		}
 
 		const dialog = new frappe.ui.Dialog({
 			title: __("Select Fields to Print"),
@@ -163,15 +179,26 @@
 					frappe.msgprint(__("Please select at least one field."));
 					return;
 				}
-				save_config(report_name, selected, values.summarize_by_customer);
+				save_config(
+					report_name,
+					selected,
+					values.summarize_by_customer,
+					values.group_summary
+				);
 				dialog.hide();
-				do_print(report, report_name, selected, values.summarize_by_customer);
+				do_print(
+					report,
+					report_name,
+					selected,
+					values.summarize_by_customer,
+					values.group_summary
+				);
 			},
 		});
 		dialog.show();
 	}
 
-	function do_print(report, report_name, fields, summarize) {
+	function do_print(report, report_name, fields, summarize, group_summary) {
 		const filters =
 			(report.get_filter_values && report.get_filter_values()) ||
 			(report.get_values && report.get_values()) ||
@@ -184,6 +211,7 @@
 				filters: JSON.stringify(filters),
 				visible_columns: JSON.stringify(fields),
 				summarize: summarize ? 1 : 0,
+				group_summary: group_summary ? 1 : 0,
 			},
 			freeze: true,
 			freeze_message: __("Generating PDF..."),
