@@ -88,7 +88,9 @@ def get_pdf_html(report_name, filters, visible_columns=None, summarize=0, group_
 	currency = (company_doc and company_doc.default_currency) or "USD"
 
 	if cint(group_summary):
-		return _build_group_summary_html(report_name, filters, rows, company, company_doc, currency)
+		return _build_group_summary_html(
+			report_name, filters, rows, company, company_doc, currency, columns
+		)
 
 	letter_head_html = _company_header_html(company_doc)
 	filter_html = _build_filter_html(filters, company)
@@ -173,8 +175,11 @@ _GROUP_SUMMARY_CSS = """
 	table.gs { width: 100%; border-collapse: collapse; font-size: 8pt;
 	           margin-top: 6px; }
 	table.gs th, table.gs td { padding: 1.5px 6px; }
-	table.gs td.amt, table.gs th.amt { text-align: right; width: 19%;
+	table.gs td.amt, table.gs th.amt { text-align: right; white-space: nowrap;
 	                                   font-variant-numeric: tabular-nums; }
+	/* first column absorbs the slack so the amounts stay right-aligned
+	   whatever mix of fields the user picked */
+	table.gs tr.gs-dc th:first-child { width: 100%; }
 	table.gs th.gs-cb { text-align: center; font-weight: 600; font-size: 8pt;
 	                    text-transform: uppercase; letter-spacing: 0.3px;
 	                    color: #5e72e4; border-bottom: 1px solid #cbd5e0; }
@@ -193,9 +198,41 @@ _GROUP_SUMMARY_CSS = """
 """
 
 
-def _build_group_summary_html(report_name, filters, rows, company, company_doc, currency):
+BALANCE_FIELDS = ("outstanding", "total_due")
+
+
+def _build_group_summary_html(report_name, filters, rows, company, company_doc, currency, columns):
 	def money(value):
 		return fmt_money(flt(value), currency=currency) if flt(value) else ""
+
+	# The closing balance is what becomes Debit / Credit, so it is never a
+	# column of its own. Everything else the user ticked is printed as-is,
+	# in report order, to the left of the balance pair.
+	lead_columns = [c for c in (columns or []) if c["fieldname"] not in BALANCE_FIELDS]
+
+	# something has to label each line - fall back to the customer name even
+	# when the user unticked every text field
+	if not any(c.get("fieldtype") not in NUMERIC_TYPES for c in lead_columns):
+		lead_columns.insert(
+			0, {"label": _("Customer Name"), "fieldname": "customer_name", "fieldtype": "Data"}
+		)
+
+	sum_fields = [c["fieldname"] for c in lead_columns if c.get("fieldtype") in NUMERIC_TYPES]
+
+	def cell(col, row):
+		value = row.get(col["fieldname"])
+		if value is None or value == "":
+			return ""
+		fieldtype = col.get("fieldtype")
+		if fieldtype == "Currency":
+			return fmt_money(flt(value), currency=row.get("currency") or currency)
+		if fieldtype == "Float":
+			return f"{flt(value):,.2f}"
+		if fieldtype == "Int":
+			return str(cint(value))
+		if fieldtype == "Date":
+			return formatdate(value)
+		return escape_html(str(value))
 
 	entries = []
 	for r in rows:
@@ -208,6 +245,8 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 		entries.append(
 			{
 				"name": r.get("customer_name") or r.get("party_name") or r.get("party") or "",
+				"cells": [cell(c, r) for c in lead_columns],
+				"values": {f: flt(r.get(f)) for f in sum_fields},
 				"debit": balance if balance > 0 else 0.0,
 				"credit": -balance if balance < 0 else 0.0,
 			}
@@ -273,53 +312,82 @@ def _build_group_summary_html(report_name, filters, rows, company, company_doc, 
 		)
 
 	def column_head():
+		spacer = "".join("<th></th>" for _c in lead_columns)
+		labels = ""
+		for i, c in enumerate(lead_columns):
+			css = "amt" if c.get("fieldtype") in NUMERIC_TYPES else ("nm" if i == 0 else "")
+			labels += (
+				'<th class="' + css + '">'
+				+ escape_html(str(_(c.get("label") or c["fieldname"])))
+				+ "</th>"
+			)
 		return (
 			"<thead>"
-			'<tr><th></th><th class="amt gs-cb" colspan="2">' + _("Closing Balance") + "</th></tr>"
-			'<tr class="gs-dc"><th class="nm">' + _("Customer Name") + "</th>"
-			'<th class="amt">' + _("Debit") + "</th>"
+			"<tr>" + spacer + '<th class="amt gs-cb" colspan="2">' + _("Closing Balance") + "</th></tr>"
+			'<tr class="gs-dc">' + labels + '<th class="amt">' + _("Debit") + "</th>"
 			'<th class="amt">' + _("Credit") + "</th></tr>"
 			"</thead>"
 		)
 
+	# the running-total label goes in the first text column, never in a numeric
+	# one - that would hide the column's own total
+	label_idx = next(
+		(i for i, c in enumerate(lead_columns) if c.get("fieldtype") not in NUMERIC_TYPES), 0
+	)
+
+	def summary_row(css_class, label, debit, credit, totals=None):
+		"""Brought Forward / Carried Over / Grand Total - the label sits in the
+		first text column, running sums under every numeric column picked."""
+		cells = ""
+		for i, c in enumerate(lead_columns):
+			if i == label_idx:
+				cells += "<td>" + label + "</td>"
+			elif c.get("fieldtype") in NUMERIC_TYPES:
+				value = (totals or {}).get(c["fieldname"])
+				cells += '<td class="amt">' + (money(value) if value else "") + "</td>"
+			else:
+				cells += "<td></td>"
+		return (
+			'<tr class="' + css_class + '">' + cells + '<td class="amt">' + money(debit) + "</td>"
+			'<td class="amt">' + money(credit) + "</td></tr>"
+		)
+
 	html_pages = []
 	run_debit = run_credit = 0.0
+	run_totals = dict.fromkeys(sum_fields, 0.0)
 
 	for page_no, page_rows in enumerate(pages, 1):
 		open_debit, open_credit = run_debit, run_credit
+		open_totals = dict(run_totals)
 
 		body = ""
 		if page_no > 1:
-			body += (
-				'<tr class="gs-carry"><td>' + _("Brought Forward") + "</td>"
-				'<td class="amt">' + money(open_debit) + "</td>"
-				'<td class="amt">' + money(open_credit) + "</td></tr>"
+			body += summary_row(
+				"gs-carry", _("Brought Forward"), open_debit, open_credit, open_totals
 			)
 
 		for idx, e in enumerate(page_rows):
 			run_debit += e["debit"]
 			run_credit += e["credit"]
+			for f in sum_fields:
+				run_totals[f] += e["values"].get(f, 0.0)
 			body += (
-				'<tr class="' + ("odd" if idx % 2 == 0 else "even") + '"><td>'
-				+ escape_html(e["name"])
-				+ "</td>"
-				'<td class="amt">' + money(e["debit"]) + "</td>"
+				'<tr class="' + ("odd" if idx % 2 == 0 else "even") + '">'
+				+ "".join(
+					'<td class="amt">' + v + "</td>"
+					if c.get("fieldtype") in NUMERIC_TYPES
+					else "<td>" + v + "</td>"
+					for c, v in zip(lead_columns, e["cells"])
+				)
+				+ '<td class="amt">' + money(e["debit"]) + "</td>"
 				'<td class="amt">' + money(e["credit"]) + "</td></tr>"
 			)
 
 		is_last = page_no == total_pages
 		if is_last:
-			body += (
-				'<tr class="gs-total"><td>' + _("Grand Total") + "</td>"
-				'<td class="amt">' + money(run_debit) + "</td>"
-				'<td class="amt">' + money(run_credit) + "</td></tr>"
-			)
+			body += summary_row("gs-total", _("Grand Total"), run_debit, run_credit, run_totals)
 		else:
-			body += (
-				'<tr class="gs-carry"><td>' + _("Carried Over") + "</td>"
-				'<td class="amt">' + money(run_debit) + "</td>"
-				'<td class="amt">' + money(run_credit) + "</td></tr>"
-			)
+			body += summary_row("gs-carry", _("Carried Over"), run_debit, run_credit, run_totals)
 
 		footer = "" if is_last else '<div class="gs-cont">' + _("continued ...") + "</div>"
 
