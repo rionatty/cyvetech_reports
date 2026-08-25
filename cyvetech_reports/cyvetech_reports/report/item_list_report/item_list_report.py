@@ -5,7 +5,9 @@
 import json
 import frappe
 from frappe import _
-from frappe.utils import flt, fmt_money, format_datetime, get_datetime
+from frappe.utils import (
+    date_diff, flt, fmt_money, format_datetime, formatdate, get_datetime, nowdate
+)
 
 
 # ============================================================
@@ -74,6 +76,27 @@ def get_columns(filters):
             "width"    : 140
         })
 
+    if "batch" in extra:
+        cols.append({
+            "label"    : _("Batch No"),
+            "fieldname": "batch_no",
+            "fieldtype": "Link",
+            "options"  : "Batch",
+            "width"    : 150
+        })
+        cols.append({
+            "label"    : _("Expiry"),
+            "fieldname": "expiry_date",
+            "fieldtype": "Date",
+            "width"    : 110
+        })
+        cols.append({
+            "label"    : _("Qty Available"),
+            "fieldname": "batch_qty",
+            "fieldtype": "Float",
+            "width"    : 120
+        })
+
     if "description" in extra:
         cols.append({
             "label"    : _("Description"),
@@ -83,6 +106,83 @@ def get_columns(filters):
         })
 
     return cols
+
+
+def get_batch_map(item_codes, company):
+    """item_code -> [{batch_no, expiry_date, qty}] with stock still on hand.
+
+    Batch quantities live in two places in ERPNext v15+: older stock ledger
+    entries carry ``batch_no`` directly, newer ones point at a Serial and
+    Batch Bundle whose child rows hold the per-batch quantity. Both are
+    summed here (the legacy branch skips rows that have a bundle so nothing
+    is counted twice), mirroring the standard Batch-Wise Balance History.
+    """
+    if not item_codes:
+        return {}
+
+    params = {"items": tuple(item_codes), "company": company}
+
+    rows = frappe.db.sql("""
+        SELECT sle.item_code, sle.batch_no, SUM(sle.actual_qty) AS qty
+        FROM `tabStock Ledger Entry` sle
+        INNER JOIN `tabWarehouse` wh ON wh.name = sle.warehouse
+        WHERE sle.is_cancelled = 0
+          AND sle.docstatus < 2
+          AND IFNULL(sle.batch_no, '') != ''
+          AND IFNULL(sle.serial_and_batch_bundle, '') = ''
+          AND sle.item_code IN %(items)s
+          AND wh.company = %(company)s
+        GROUP BY sle.item_code, sle.batch_no
+    """, params, as_dict=1) or []
+
+    if frappe.db.table_exists("Serial and Batch Entry"):
+        rows += frappe.db.sql("""
+            SELECT sle.item_code, sbe.batch_no, SUM(sbe.qty) AS qty
+            FROM `tabStock Ledger Entry` sle
+            INNER JOIN `tabSerial and Batch Entry` sbe
+                    ON sbe.parent = sle.serial_and_batch_bundle
+            INNER JOIN `tabWarehouse` wh ON wh.name = sle.warehouse
+            WHERE sle.is_cancelled = 0
+              AND sle.docstatus < 2
+              AND IFNULL(sbe.batch_no, '') != ''
+              AND sle.item_code IN %(items)s
+              AND wh.company = %(company)s
+            GROUP BY sle.item_code, sbe.batch_no
+        """, params, as_dict=1) or []
+
+    totals = {}
+    for r in rows:
+        key = (r["item_code"], r["batch_no"])
+        totals[key] = totals.get(key, 0.0) + flt(r["qty"])
+
+    batch_names = list({b for _code, b in totals})
+    expiry = {}
+    if batch_names:
+        for b in frappe.get_all(
+            "Batch",
+            filters={"name": ("in", batch_names)},
+            fields=["name", "expiry_date"],
+        ):
+            expiry[b["name"]] = b["expiry_date"]
+
+    batch_map = {}
+    for (code, batch_no), qty in totals.items():
+        # only batches still holding stock are "available"
+        if flt(qty) <= 0:
+            continue
+        batch_map.setdefault(code, []).append({
+            "batch_no"   : batch_no,
+            "expiry_date": expiry.get(batch_no),
+            "qty"        : flt(qty),
+        })
+
+    # earliest expiry first (FEFO); undated batches last
+    for code in batch_map:
+        batch_map[code].sort(
+            key=lambda b: (b["expiry_date"] is None, b["expiry_date"], b["batch_no"])
+        )
+
+    return batch_map
 
 
 # ============================================================
@@ -194,6 +294,11 @@ def get_data(filters):
         for s in stock_rows:
             stock_map[s["item_code"]] = flt(s["qty_on_hand"])
 
+    # Batches (one sub-row per batch under its item)
+    batch_map = {}
+    if "batch" in extra and item_codes:
+        batch_map = get_batch_map(item_codes, filters.get("company"))
+
     # Build grouped rows
     rows          = []
     current_group = None
@@ -225,6 +330,22 @@ def get_data(filters):
             "is_group_row" : 0,
             "disabled"     : item.get("disabled") or 0,
         })
+
+        for batch in batch_map.get(code, []):
+            rows.append({
+                "display_name" : "        " + (batch["batch_no"] or ""),
+                "item_code"    : code,
+                "selling_price": None,
+                "qty_on_hand"  : None,
+                "brand"        : "",
+                "description"  : "",
+                "batch_no"     : batch["batch_no"],
+                "expiry_date"  : batch["expiry_date"],
+                "batch_qty"    : batch["qty"],
+                "is_group_row" : 0,
+                "is_batch_row" : 1,
+                "disabled"     : item.get("disabled") or 0,
+            })
 
     return rows
 
@@ -276,6 +397,7 @@ def get_pdf_html(filters, data):
     badge_map = {
         "selling_price": "Selling Price",
         "qty_on_hand"  : "Current Stock",
+        "batch"        : "Batch / Expiry / Qty",
         "brand"        : "Brand",
         "description"  : "Description",
     }
@@ -391,6 +513,7 @@ def build_company_header(company_doc):
 def build_pdf_table(data, extra, currency):
     show_price = "selling_price" in extra
     show_stock = "qty_on_hand"   in extra
+    show_batch = "batch"         in extra
     show_brand = "brand"         in extra
     show_desc  = "description"   in extra
 
@@ -403,6 +526,10 @@ def build_pdf_table(data, extra, currency):
     weights = [("idx", 0.5), ("name", 4.0)]
     if show_price: weights.append(("price", 1.6))
     if show_stock: weights.append(("qty",   1.4))
+    if show_batch:
+        weights.append(("batch",  1.8))
+        weights.append(("expiry", 1.2))
+        weights.append(("bqty",   1.3))
     if show_brand: weights.append(("brand", 1.6))
     if show_desc:  weights.append(("desc",  3.5))
 
@@ -420,6 +547,10 @@ def build_pdf_table(data, extra, currency):
         headers += '<th class="text-right" style="width:' + str(pct["price"]) + '%;">Selling Price</th>'
     if show_stock:
         headers += '<th class="text-right" style="width:' + str(pct["qty"]) + '%;">Qty on Hand</th>'
+    if show_batch:
+        headers += '<th style="width:' + str(pct["batch"]) + '%;">Batch No</th>'
+        headers += '<th class="text-center" style="width:' + str(pct["expiry"]) + '%;">Expiry</th>'
+        headers += '<th class="text-right" style="width:' + str(pct["bqty"]) + '%;">Qty Available</th>'
     if show_brand:
         headers += '<th style="width:' + str(pct["brand"]) + '%;">Brand</th>'
     if show_desc:
@@ -438,6 +569,46 @@ def build_pdf_table(data, extra, currency):
                 '&#9658; &nbsp;<strong>' + group_name + '</strong>'
                 '</td></tr>'
             )
+        elif row.get("is_batch_row"):
+            # stale batch rows (batch columns since switched off) would push
+            # every following cell out of alignment - drop them
+            if not show_batch:
+                continue
+
+            # batch detail line: only the batch columns carry values
+            expiry = row.get("expiry_date")
+            expiry_str, expiry_style = "-", ""
+            if expiry:
+                expiry_str = formatdate(expiry)
+                days = date_diff(expiry, nowdate())
+                if days < 0:
+                    expiry_str += " (expired)"
+                    expiry_style = "color:#c53030; font-weight:700;"
+                elif days <= 90:
+                    expiry_style = "color:#b7791f; font-weight:600;"
+
+            rows_html += '<tr class="batch-row">'
+            rows_html += '<td></td>'
+            rows_html += (
+                '<td class="item-name-cell" style="padding-left:26px; color:#4a5568;">'
+                '&#8226; ' + (row.get("batch_no") or "") + '</td>'
+            )
+            if show_price:
+                rows_html += '<td></td>'
+            if show_stock:
+                rows_html += '<td></td>'
+            rows_html += '<td style="color:#4a5568;">' + (row.get("batch_no") or "-") + '</td>'
+            rows_html += '<td class="text-center" style="' + expiry_style + '">' + expiry_str + '</td>'
+            rows_html += (
+                '<td class="text-right" style="color:#2b6cb0; font-weight:600;">'
+                + "{:,.2f}".format(flt(row.get("batch_qty"))) + '</td>'
+            )
+            if show_brand:
+                rows_html += '<td></td>'
+            if show_desc:
+                rows_html += '<td></td>'
+            rows_html += '</tr>'
+
         else:
             item_index += 1
             cls  = "even" if item_index % 2 == 0 else "odd"
@@ -468,6 +639,8 @@ def build_pdf_table(data, extra, currency):
                     '<td class="text-right" style="' + qty_style + '">'
                     + qty_str + '</td>'
                 )
+            if show_batch:
+                rows_html += '<td></td><td></td><td></td>'
             if show_brand:
                 rows_html += (
                     '<td>' + (row.get("brand") or "-") + '</td>'
@@ -539,6 +712,9 @@ def get_pdf_css():
         "    word-break:break-word; }"
         "table.report-table tr.odd  { background:#ffffff; }"
         "table.report-table tr.even { background:#f7fafc; }"
+        "table.report-table tr.batch-row { background:#fbfdff; }"
+        "table.report-table tr.batch-row td { font-size:6.8pt; border-top:none;"
+        " padding-top:2px; padding-bottom:2px; }"
         ".text-right  { text-align:right  !important; }"
         ".text-center { text-align:center !important; }"
 

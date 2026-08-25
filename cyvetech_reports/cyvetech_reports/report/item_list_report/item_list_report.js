@@ -64,6 +64,7 @@ frappe.query_reports["Item List Report"] = {
                 const options = [
                     { value: "selling_price", description: "Selling Price" },
                     { value: "qty_on_hand",   description: "Current Stock (Qty on Hand)" },
+                    { value: "batch",         description: "Batch No, Expiry & Qty Available" },
                     { value: "brand",         description: "Brand" },
                     { value: "description",   description: "Description" }
                 ];
@@ -102,6 +103,27 @@ frappe.query_reports["Item List Report"] = {
             const qty = parseFloat(data.qty_on_hand) || 0;
             const color = qty <= 0 ? "#e53e3e" : "#276749";
             value = `<span style="color:${color}; font-weight:600;">${value}</span>`;
+        }
+
+        if (data && data.is_batch_row) {
+            if (column.fieldname === "display_name") {
+                value = `<span style="color:#4a5568;">&#8226; ${(data.batch_no || "")}</span>`;
+            }
+            // expiry: red once expired, amber inside 90 days
+            if (column.fieldname === "expiry_date" && data.expiry_date) {
+                const days = Math.floor(
+                    (frappe.datetime.str_to_obj(data.expiry_date) - frappe.datetime.now_date(true))
+                    / 86400000
+                );
+                if (days < 0) {
+                    value = `<span style="color:#c53030; font-weight:700;">${value} (expired)</span>`;
+                } else if (days <= 90) {
+                    value = `<span style="color:#b7791f; font-weight:600;">${value}</span>`;
+                }
+            }
+            if (column.fieldname === "batch_qty") {
+                value = `<span style="color:#2b6cb0; font-weight:600;">${value}</span>`;
+            }
         }
 
         return value;
