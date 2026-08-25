@@ -333,7 +333,9 @@ def get_data(filters):
 
         for batch in batch_map.get(code, []):
             rows.append({
-                "display_name" : "        " + (batch["batch_no"] or ""),
+                # the batch number has its own column - repeating it here just
+                # duplicates it and pushes the batch columns off to the right
+                "display_name" : "",
                 "item_code"    : code,
                 "selling_price": None,
                 "qty_on_hand"  : None,
@@ -523,13 +525,15 @@ def build_pdf_table(data, extra, currency):
     # Column widths as relative weights, normalised to 100% so the table
     # always spans exactly the usable A4 width (with table-layout:fixed) no
     # matter which optional columns are shown — nothing overflows the page.
-    weights = [("idx", 0.5), ("name", 4.0)]
+    # the name column gives up width when the batch columns are shown, so the
+    # batch details sit close under the item instead of far right of a gap
+    weights = [("idx", 0.5), ("name", 2.6 if show_batch else 4.0)]
     if show_price: weights.append(("price", 1.6))
     if show_stock: weights.append(("qty",   1.4))
     if show_batch:
-        weights.append(("batch",  1.8))
-        weights.append(("expiry", 1.2))
-        weights.append(("bqty",   1.3))
+        weights.append(("batch",  1.5))
+        weights.append(("expiry", 1.1))
+        weights.append(("bqty",   1.2))
     if show_brand: weights.append(("brand", 1.6))
     if show_desc:  weights.append(("desc",  3.5))
 
@@ -589,15 +593,15 @@ def build_pdf_table(data, extra, currency):
 
             rows_html += '<tr class="batch-row">'
             rows_html += '<td></td>'
-            rows_html += (
-                '<td class="item-name-cell" style="padding-left:26px; color:#4a5568;">'
-                '&#8226; ' + (row.get("batch_no") or "") + '</td>'
-            )
+            rows_html += '<td class="item-name-cell"></td>'
             if show_price:
                 rows_html += '<td></td>'
             if show_stock:
                 rows_html += '<td></td>'
-            rows_html += '<td style="color:#4a5568;">' + (row.get("batch_no") or "-") + '</td>'
+            rows_html += (
+                '<td style="color:#4a5568;">&#8226; '
+                + (row.get("batch_no") or "-") + '</td>'
+            )
             rows_html += '<td class="text-center" style="' + expiry_style + '">' + expiry_str + '</td>'
             rows_html += (
                 '<td class="text-right" style="color:#2b6cb0; font-weight:600;">'

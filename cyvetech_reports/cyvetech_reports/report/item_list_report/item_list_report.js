@@ -106,8 +106,12 @@ frappe.query_reports["Item List Report"] = {
         }
 
         if (data && data.is_batch_row) {
+            // batch number belongs in its own column, not repeated in the name
             if (column.fieldname === "display_name") {
-                value = `<span style="color:#4a5568;">&#8226; ${(data.batch_no || "")}</span>`;
+                value = "";
+            }
+            if (column.fieldname === "batch_no") {
+                value = `<span style="color:#4a5568;">&#8226; ${value}</span>`;
             }
             // expiry: red once expired, amber inside 90 days
             if (column.fieldname === "expiry_date" && data.expiry_date) {
